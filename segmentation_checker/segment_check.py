@@ -15,15 +15,7 @@ st.set_page_config(layout="wide")
 
 
 @st.cache_data
-def load_pair(MIR_DIR: Path, SEG_DIR: Path):
-    # This should hold your nii.gz images
-    MRI_DIR = Path("<MRI_DIR>")
-    # This should hold your nii.gz segmentations
-    SEG_DIR = Path("<SEG_DIR>")
-
-    # This is used to glob a unique ID from the filename to match img and seg
-    id_globber = r"\w+\d+"
-    
+def load_pair(MRI_DIR: Path, SEG_DIR: Path, id_globber:str = r"\w+\d+"):
     # Globbing files
     mri_files, seg_files = MRI_DIR.rglob("*nii.gz"), SEG_DIR.rglob("*nii.gz")
     mri_files = {re.search(id_globber, f.name).group(): f for f in mri_files}
@@ -37,11 +29,26 @@ def load_pair(MIR_DIR: Path, SEG_DIR: Path):
     paired = {sid: (mri_files[sid], seg_files[sid]) for sid in intersection}
     return paired
 
+# This should hold your nii.gz images
+if st.session_state.get("require_setup", True):
+    st.session_state.mri_dir = Path(st.text_input("<MRI_DIR>:", value="<MRI_DIR>"))
+    # This should hold your nii.gz segmentations
+    st.session_state.seg_dir = Path(st.text_input("<SEG_DIR>:", value="<SEG_DIR>"))
+    # This is a regex globber
+    st.session_state.id_globber = st.text_input("Regex ID globber:", value=r"\w+\d+")
 
+mri_dir = st.session_state.mri_dir
+seg_dir = st.session_state.seg_dir
+id_globber = st.session_state.id_globber
 
-paired = load_pair()
-intersection = list(paired.keys())
-intersection.sort()
+if mri_dir.is_dir() and seg_dir.is_dir():
+    paired = load_pair(mri_dir, seg_dir)
+    intersection = list(paired.keys())
+    intersection.sort()
+    st.session_state.require_setup = False
+else:
+    st.error(f"`{str(mri_dir)}` or `{str(seg_dir)}` not found!")
+    st.stop()
 
 # Streamlit app
 st.title("MRI and segmentation viewer")
@@ -50,7 +57,7 @@ st.title("MRI and segmentation viewer")
 frame_path = Path("./Checked_Images.csv")
 if 'dataframe' not in st.session_state:
     if frame_path.is_file():
-        dataframe = pd.read_excel(frame_path)
+        dataframe = pd.read_csv(frame_path)
     else:
         dataframe = pd.DataFrame(columns=["PairID", "Checked", "NeedFix"])
     st.session_state.dataframe = dataframe
