@@ -1,0 +1,5 @@
+streamlit
+simpleitk
+opencv-python
+pandas
+numpy
