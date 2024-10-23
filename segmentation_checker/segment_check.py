@@ -10,6 +10,7 @@ from mnts.utils import get_fnames_by_IDs, get_unique_IDs
 
 import streamlit as st
 import pprint
+import plotly.express as px
 
 st.set_page_config(layout="wide")  
 
@@ -31,9 +32,9 @@ def load_pair(MRI_DIR: Path, SEG_DIR: Path, id_globber:str = r"\w+\d+"):
 
 # This should hold your nii.gz images
 if st.session_state.get("require_setup", True):
-    st.session_state.mri_dir = Path(st.text_input("<MRI_DIR>:", value="<MRI_DIR>"))
+    st.session_state.mri_dir = Path(st.text_input("<MRI_DIR>:", value="../<MRI_DIR>"))
     # This should hold your nii.gz segmentations
-    st.session_state.seg_dir = Path(st.text_input("<SEG_DIR>:", value="<SEG_DIR>"))
+    st.session_state.seg_dir = Path(st.text_input("<SEG_DIR>:", value="../<SEG_DIR>"))
     # This is a regex globber
     st.session_state.id_globber = st.text_input("Regex ID globber:", value=r"\w+\d+")
 
@@ -60,6 +61,7 @@ if 'dataframe' not in st.session_state:
         dataframe = pd.read_csv(frame_path)
     else:
         dataframe = pd.DataFrame(columns=["PairID", "Checked", "NeedFix"])
+    dataframe['PairID'] = dataframe['PairID'].astype(str)
     st.session_state.dataframe = dataframe
         
 # Initialize session state
@@ -92,7 +94,7 @@ def confirm_popup(text="Are you sure?"):
         st.rerun()
 
 if selected_pair:
-    if any(selected_pair == x for x in st.session_state.dataframe['PairID']):
+    if any(selected_pair == str(x) for x in st.session_state.dataframe['PairID']):
         st.warning("You have already seen this case!")
     
     with st.container(height=700):
@@ -114,7 +116,10 @@ if selected_pair:
         mri_image = sitk.GetArrayFromImage(sitk.ReadImage(str(mri_path)))
         seg_image = sitk.GetArrayFromImage(sitk.ReadImage(str(seg_path)))
 
-        mri_image, seg_image = crop_image_to_segmentation(mri_image, seg_image, 20)
+        try:
+            mri_image, seg_image = crop_image_to_segmentation(mri_image, seg_image, 20)
+        except ValueError:
+            st.warning("Something wrong with the segmetnation.")
 
         # Rescale
         ncols = 5
@@ -123,7 +128,10 @@ if selected_pair:
                                       upper = upper)
         seg_image = make_grid((seg_image != 0), ncols=ncols).astype('int')
 
-        mri_image = draw_contour(mri_image, seg_image != 0, width=2)
+        try:
+            mri_image = draw_contour(mri_image, seg_image != 0, width=2)
+        except ValueError:
+            st.warning("Something wrong with the segmetnation.")
 
         # Display images
         image_slot.image(mri_image, use_column_width=True)
@@ -143,19 +151,15 @@ if selected_pair:
     
     # Button to load the next option
     with col2:
-        if st.button('➡️', use_container_width=True):
+        if st.button('➡️ Checked and Next', use_container_width=True):
             current_index = selected_index
             update_dataframe(intersection[current_index])
             next_index = (current_index + 1) % len(intersection)
-            while next_index != current_index:
-                next_pair = intersection[next_index]
-                if not st.session_state.dataframe.query(f"PairID == '{next_pair}' & Checked == True").empty:
-                    next_index = (next_index + 1) % len(intersection)
-                else:
-                    break
+            while str(intersection[next_index]) in st.session_state.dataframe['PairID'].values:
+                next_index += 1
             st.session_state.selection_index = next_index
             st.rerun()
-        if st.button('➡️ (Need Fix)', use_container_width=True):
+        if st.button('➡️ Mark as need fix)', use_container_width=True):
             current_index = selected_index
             update_dataframe(intersection[current_index], True)
             next_index = (current_index + 1) % len(intersection)
@@ -192,5 +196,20 @@ if selected_pair:
 st.progress(len(st.session_state.dataframe) / float(len(intersection)), 
             text=f"Progress: ({len(st.session_state.dataframe)} / {len(intersection)})")
 
-# Ensure saving when the app closes
-st.dataframe(st.session_state.dataframe, use_container_width=True)
+# Show dataframe
+with st.popover("Data Overview", use_container_width=True):
+    st.dataframe(st.session_state.dataframe, use_container_width=True)
+
+    # Show statistics
+    # Count the occurrences of each value in the 'NeedFix' column
+    need_fix_counts = st.session_state.dataframe['NeedFix'].value_counts()
+
+    # Create a pie chart using Plotly
+    fig = px.pie(
+        names=need_fix_counts.index,
+        values=need_fix_counts.values,
+        title="Need Fix Counts"
+    )
+
+    # Display the pie chart in Streamlit
+    st.plotly_chart(fig)

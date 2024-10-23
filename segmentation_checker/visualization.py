@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import SimpleITK as sitk
+import streamlit as st
 
 def make_grid(array, nrows=None, ncols=None, padding=2, normalize=False):
     """
@@ -20,12 +21,12 @@ def make_grid(array, nrows=None, ncols=None, padding=2, normalize=False):
 
     # Calculate nrows and ncols if None
     if nrows is None and ncols is not None:
-        nrows = int(np.ceil(depth / ncols))
+        nrows = max(int(np.ceil(depth / ncols)), 1)
     elif ncols is None and nrows is not None:
-        ncols = int(np.ceil(depth / nrows))
+        ncols = max(int(np.ceil(depth / nrows)), 1)
     elif nrows is None and ncols is None:
-        nrows = int(np.ceil(np.sqrt(depth)))
-        ncols = int(np.ceil(depth / nrows))
+        nrows = max(int(np.ceil(np.sqrt(depth))), 1)
+        ncols = max(int(np.ceil(depth / nrows)), 1)
 
     # Normalize if needed
     if normalize:
