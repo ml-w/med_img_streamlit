@@ -12,8 +12,10 @@ import streamlit as st
 import pprint
 import plotly.express as px
 
-st.set_page_config(layout="wide")  
+from typing import *
 
+st.set_page_config(layout="wide")  
+st.write("# Segmentation Checker")
 
 @st.cache_data
 def load_pair(MRI_DIR: Path, SEG_DIR: Path, id_globber:str = r"\w+\d+"):
@@ -32,20 +34,33 @@ def load_pair(MRI_DIR: Path, SEG_DIR: Path, id_globber:str = r"\w+\d+"):
 
 # This should hold your nii.gz images
 if st.session_state.get("require_setup", True):
-    st.session_state.mri_dir = Path(st.text_input("<MRI_DIR>:", value="../<MRI_DIR>"))
+    st.session_state.mri_dir = Path(st.text_input("<MRI_DIR>:", value="/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2"))
     # This should hold your nii.gz segmentations
-    st.session_state.seg_dir = Path(st.text_input("<SEG_DIR>:", value="../<SEG_DIR>"))
+    st.session_state.seg_dir = Path(st.text_input("<SEG_DIR>:", value="/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2_NPCseg"))
     # This is a regex globber
-    st.session_state.id_globber = st.text_input("Regex ID globber:", value=r"\w+\d+")
+    st.session_state.id_globber = st.text_input("Regex ID globber:", value=r"\w{0,5}\d+")
+
+# Target ID list
+with st.expander("Specify ID"):
+    target_ids = st.text_input("CSV string", value="")
+    if len(target_ids):
+        target_ids = list(set(target_ids.split(',')))
 
 mri_dir = st.session_state.mri_dir
 seg_dir = st.session_state.seg_dir
 id_globber = st.session_state.id_globber
 
+# Get paired MRI and segmentation
 if mri_dir.is_dir() and seg_dir.is_dir():
     paired = load_pair(mri_dir, seg_dir)
     intersection = list(paired.keys())
     intersection.sort()
+    # further filtering if target_ids specified
+    if len(target_ids):
+        intersection = set(intersection) & set(target_ids)
+        if missing := set(target_ids) - set(intersection):
+            st.warning(f"IDs specified but the following are missing: {','.join(missing)}")
+        intersection = list(intersection)
     st.session_state.require_setup = False
 else:
     st.error(f"`{str(mri_dir)}` or `{str(seg_dir)}` not found!")
@@ -81,7 +96,7 @@ def update_dataframe(pair_id, need_fix=False):
     df = st.session_state.dataframe
     if not ((df["PairID"] == pair_id) & (df["Checked"])).any():
         new_row = pd.Series({"PairID": pair_id, "Checked": True, "NeedFix": need_fix})
-        st.session_state.dataframe = df.append(new_row, ignore_index=True)
+        st.session_state.dataframe = pd.concat([df, new_row.to_frame().T], ignore_index=True)
 
 @st.dialog("Are you sure?")
 def confirm_popup(text="Are you sure?"):
