@@ -11,6 +11,7 @@ from mnts.utils import get_fnames_by_IDs, get_unique_IDs
 import streamlit as st
 import pprint
 import plotly.express as px
+import numpy as np
 
 from typing import *
 
@@ -32,13 +33,36 @@ def load_pair(MRI_DIR: Path, SEG_DIR: Path, id_globber:str = r"\w+\d+"):
     paired = {sid: (mri_files[sid], seg_files[sid]) for sid in intersection}
     return paired
 
+def clean_dataframe():
+    st.warning("Dataframe deleted")
+    st.session_state.pop('dataframe')
+
+def check_image_metadata(img1:sitk.Image, img2: sitk.Image, tolerance=1e-3):
+    # Check metadata with tolerance
+    spacing_match = np.all(np.isclose(mri_image.GetSpacing(), seg_image.GetSpacing(), atol=tolerance))
+    direction_match = np.all(np.isclose(mri_image.GetDirection(), seg_image.GetDirection(), atol=tolerance))
+    origin_match = np.all(np.isclose(mri_image.GetOrigin(), seg_image.GetOrigin(), atol=tolerance))
+
+    if spacing_match and direction_match and origin_match:
+        st.success("All metadata matches: spacing, direction, and origin.")
+    else:
+        if not spacing_match:
+            st.error(f"Spacing does not match: {img1.GetSpacing() = } | {img2.GetSpacing() = }")
+        if not direction_match:
+            st.error(f"Direction does not match: {img1.GetDirection() = } | {img2.GetDirection() = }")
+        if not origin_match:
+            st.error(f"Origin does not match: {img1.GetOrigin() = } | {img2.GetOrigin() = }")
+    return all([spacing_match, direction_match, origin_match])
+
 # This should hold your nii.gz images
-if st.session_state.get("require_setup", True):
-    st.session_state.mri_dir = Path(st.text_input("<MRI_DIR>:", value="/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2"))
+with st.expander("Directory Setup", expanded=st.session_state.get("require_setup", False)):
+    st.write("### Insert the local directory (where this app is running)")
+    st.session_state.mri_dir = Path(st.text_input("<MRI_DIR>:", value=st.session_state.get('mri_dir', "/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2")))
     # This should hold your nii.gz segmentations
-    st.session_state.seg_dir = Path(st.text_input("<SEG_DIR>:", value="/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2_NPCseg"))
+    st.session_state.seg_dir = Path(st.text_input("<SEG_DIR>:", value=st.session_state.get('seg_dir', "/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2_NPCseg")))
     # This is a regex globber
-    st.session_state.id_globber = st.text_input("Regex ID globber:", value=r"\w{0,5}\d+")
+    st.session_state.id_globber = st.text_input("Regex ID globber:", value=st.session_state.get('id_globber', "\w{0,5}\d+"))
+
 
 # Target ID list
 with st.expander("Specify ID"):
@@ -70,7 +94,7 @@ else:
 st.title("MRI and segmentation viewer")
 
 # Load Excel file into session state
-frame_path = Path("./Checked_Images.csv")
+frame_path = Path(st.text_input("Frame Path:", value="./Checked_Images.csv", on_change=clean_dataframe))
 if 'dataframe' not in st.session_state:
     if frame_path.is_file():
         dataframe = pd.read_csv(frame_path)
@@ -86,7 +110,11 @@ if 'selection_index' not in st.session_state:
 # Selection box
 selected_index = st.selectbox("Select a pair", range(len(intersection)), format_func=lambda x: intersection[x], index=st.session_state.selection_index)
 st.session_state.selection_index = selected_index
-selected_pair = str(intersection[selected_index])
+try:
+    selected_pair = str(intersection[selected_index])
+    st.write(paired[selected_pair])
+except:
+    st.stop()
 
 # Function to save DataFrame
 def save_dataframe():
@@ -128,8 +156,18 @@ if selected_pair:
         mri_path, seg_path = paired[selected_pair]
 
         # Load images
-        mri_image = sitk.GetArrayFromImage(sitk.ReadImage(str(mri_path)))
-        seg_image = sitk.GetArrayFromImage(sitk.ReadImage(str(seg_path)))
+        mri_image = sitk.ReadImage(str(mri_path))
+        seg_image = sitk.ReadImage(str(seg_path))
+
+        # Check if the two images has the same spacing
+        same_spacial = check_image_metadata(mri_image, seg_image)
+
+        if not same_spacial:
+            st.warning("Resampling")
+            # seg_image = sitk.Resample(seg_image, mri_image)
+
+        mri_image = sitk.GetArrayFromImage(mri_image)
+        seg_image = sitk.GetArrayFromImage(seg_image)
 
         try:
             mri_image, seg_image = crop_image_to_segmentation(mri_image, seg_image, 20)
@@ -171,7 +209,10 @@ if selected_pair:
             update_dataframe(intersection[current_index])
             next_index = (current_index + 1) % len(intersection)
             while str(intersection[next_index]) in st.session_state.dataframe['PairID'].values:
-                next_index += 1
+                if next_index >= len(intersection) - 1:
+                    break
+                else:
+                    next_index += 1
             st.session_state.selection_index = next_index
             st.rerun()
         if st.button('➡️ Mark as need fix)', use_container_width=True):
@@ -195,7 +236,7 @@ if selected_pair:
             if answer:
                 st.write("Done")
             # if st.button(":red[Yes]"):
-            #     # st.session_state.dataframe = pd.DataFrame(columns=["PairID", "Checked"])
+                del st.session_state.dataframe
             #     pass
             # if st.button("No"):
             #     pass
@@ -207,9 +248,18 @@ if selected_pair:
         save_dataframe()
         st.success("DataFrame saved!")
 
+    st.download_button(
+        label='Download Dataframe',
+        data=st.session_state.dataframe.to_csv(index=False).encode('utf-8'),
+        file_name='dataframe.csv',
+        mime='text/csv'
+    )
+
 # Progress
-st.progress(len(st.session_state.dataframe) / float(len(intersection)), 
+st.progress(len(st.session_state.dataframe) / float(len(intersection)),
             text=f"Progress: ({len(st.session_state.dataframe)} / {len(intersection)})")
+if len(st.session_state.dataframe) == len(intersection):
+    st.success("You've viewed all the cases!")
 
 # Show dataframe
 with st.popover("Data Overview", use_container_width=True):

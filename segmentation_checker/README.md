@@ -51,3 +51,13 @@ Feel free to open issues or submit pull requests for improvements.
 # License
 
 This project is licensed under the MIT License.
+
+---
+
+# TODO
+
+- [ ] Fix error when reaching the last sample
+- [ ] Fix error requiring users select the pair twice sometimes
+- [ ] Try to load only when both directories were entered and found
+- [ ] Implement Async loading of the next pair
+- [ ] Auto-save with confirmation
