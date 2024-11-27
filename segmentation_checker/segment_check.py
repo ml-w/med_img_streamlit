@@ -1,3 +1,4 @@
+import sys
 import re
 from turtle import onrelease
 import SimpleITK as sitk
@@ -9,17 +10,65 @@ from pathlib import Path
 from mnts.utils import get_fnames_by_IDs, get_unique_IDs
 
 import streamlit as st
-import pprint
+from pprint import pprint, pformat
 import plotly.express as px
 import numpy as np
+import json
 
 from typing import *
+import logging
+from rich.logging import RichHandler
+from rich.traceback import install
+install()
 
 st.set_page_config(layout="wide")  
 st.write("# Segmentation Checker")
 
+# -- Add rich handler if it's not already there:
+def setup_logger(logger):
+    # Check if the RichHandler is already added
+    if not any(isinstance(handler, RichHandler) for handler in logger.handlers):
+        # Remove all existing handlers
+        for handler in logger.handlers:
+            logger.removeHandler(handler)
+        
+        # Add RichHandler if it's not present
+        rich_handler = RichHandler(console=False, rich_tracebacks=True)
+        logger.addHandler(rich_handler)
+        logger.setLevel(logging.INFO)  # Set the logging level if needed
+
+        # Log a test message
+        logger.info("Logger setup complete with RichHandler.")
+
+    return logger
+
+# * Adding this handler to streamlit
+# First remove the error message in streamlit by default
+logger = st.logger.get_logger("streamlit.error_util")
+for handler in logger.handlers:
+    logger.removeHandler(handler)
+# Setup the logger 
+logger = st.logger.get_logger("App")
+setup_logger(logger)
+
+# Introduce my own error handling
+def set_global_exception_handler(f):
+    import sys
+    error_util = sys.modules["streamlit.error_util"]
+    error_util.handle_uncaught_app_exception = f
+set_global_exception_handler(logger.error)
+
+def _exception_hook(exctype, value, traceback):
+    """Custom exception hook for logging uncaught exceptions."""
+    if issubclass(exctype, KeyboardInterrupt):
+        sys.__excepthook__(exctype, value, traceback)
+        return
+    logger.error("Uncaught exception", exc_info=(exctype, value, traceback))
+sys.excepthook = _exception_hook
+
 @st.cache_data
 def load_pair(MRI_DIR: Path, SEG_DIR: Path, id_globber:str = r"\w+\d+"):
+    r"""This handles the matching between segmentation and images"""
     # Globbing files
     mri_files, seg_files = MRI_DIR.rglob("*nii.gz"), SEG_DIR.rglob("*nii.gz")
     mri_files = {re.search(id_globber, f.name).group(): f for f in mri_files}
@@ -34,10 +83,12 @@ def load_pair(MRI_DIR: Path, SEG_DIR: Path, id_globber:str = r"\w+\d+"):
     return paired
 
 def clean_dataframe():
+    r"""This cleans the dataframe and is called by a button after confirmation"""
     st.warning("Dataframe deleted")
     st.session_state.pop('dataframe')
 
 def check_image_metadata(img1:sitk.Image, img2: sitk.Image, tolerance=1e-3):
+    r"""This checks the meta information of the image and the segmentation to make sure they are the same."""
     # Check metadata with tolerance
     spacing_match = np.all(np.isclose(mri_image.GetSpacing(), seg_image.GetSpacing(), atol=tolerance))
     direction_match = np.all(np.isclose(mri_image.GetDirection(), seg_image.GetDirection(), atol=tolerance))
@@ -54,15 +105,54 @@ def check_image_metadata(img1:sitk.Image, img2: sitk.Image, tolerance=1e-3):
             st.error(f"Origin does not match: {img1.GetOrigin() = } | {img2.GetOrigin() = }")
     return all([spacing_match, direction_match, origin_match])
 
-# This should hold your nii.gz images
+# Function to load state from a JSON file
+def load_state(file_path):
+    try:
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        logging.error(f"Failed to load state: {e}")
+        return None
+
+# Function to save state to a JSON file
+def save_state(file_path, state):
+    try:
+        with open(file_path, 'w') as f:
+            json.dump(state, f)
+    except Exception as e:
+        logging.error(f"Failed to save state: {e}")
+
+# File path to save/load the session state
+state_file = ".session_state.json"
+
+# Load the state if it exists
+if 'initialized' not in st.session_state:
+    loaded_state = load_state(state_file)
+    if loaded_state:
+        st.session_state.mri_dir = Path(loaded_state.get('mri_dir', "/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2"))
+        st.session_state.seg_dir = Path(loaded_state.get('seg_dir', "/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2_NPCseg"))
+        st.session_state.id_globber = loaded_state.get('id_globber', r"\w{0,5}\d+")
+    else:
+        # Initialize default settings if loading failed
+        st.session_state.mri_dir = Path("/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2")
+        st.session_state.seg_dir = Path("/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2_NPCseg")
+        st.session_state.id_globber = r"\w{0,5}\d+"
+    st.session_state.initialized = True
+
 with st.expander("Directory Setup", expanded=st.session_state.get("require_setup", False)):
     st.write("### Insert the local directory (where this app is running)")
-    st.session_state.mri_dir = Path(st.text_input("<MRI_DIR>:", value=st.session_state.get('mri_dir', "/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2")))
-    # This should hold your nii.gz segmentations
-    st.session_state.seg_dir = Path(st.text_input("<SEG_DIR>:", value=st.session_state.get('seg_dir', "/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2_NPCseg")))
-    # This is a regex globber
-    st.session_state.id_globber = st.text_input("Regex ID globber:", value=st.session_state.get('id_globber', "\w{0,5}\d+"))
-
+    st.session_state.mri_dir = Path(st.text_input("<MRI_DIR>:", value=str(st.session_state.mri_dir)))
+    st.session_state.seg_dir = Path(st.text_input("<SEG_DIR>:", value=str(st.session_state.seg_dir)))
+    st.session_state.id_globber = st.text_input("Regex ID globber:", value=st.session_state.get('id_globber', r"\w{0,5}\d+"))
+    
+    if st.button("Save States"):
+        # Save the current state
+        save_state(state_file, {
+            'mri_dir': str(st.session_state.mri_dir),
+            'seg_dir': str(st.session_state.seg_dir),
+            'id_globber': st.session_state.id_globber
+        })
+        st.rerun()
 
 # Target ID list
 with st.expander("Specify ID"):
@@ -95,7 +185,7 @@ st.title("MRI and segmentation viewer")
 
 # Load Excel file into session state
 frame_path = Path(st.text_input("Frame Path:", value="./Checked_Images.csv", on_change=clean_dataframe))
-if 'dataframe' not in st.session_state:
+if 'dataframe' not in st.session_state:     
     if frame_path.is_file():
         dataframe = pd.read_csv(frame_path)
     else:
@@ -109,11 +199,17 @@ if 'selection_index' not in st.session_state:
 
 # Selection box
 selected_index = st.selectbox("Select a pair", range(len(intersection)), format_func=lambda x: intersection[x], index=st.session_state.selection_index)
-st.session_state.selection_index = selected_index
+if not selected_index == st.session_state.selection_index:
+    # Need to trigger rerun here because the state change is not immediately reflected until next refresh
+    st.session_state.selection_index = selected_index
+    st.rerun()
+    
+# Use try-except to catch user input that doesn't exist
 try:
     selected_pair = str(intersection[selected_index])
     st.write(paired[selected_pair])
 except:
+    st.write("Your selected ID does not match with the records.")
     st.stop()
 
 # Function to save DataFrame
@@ -166,23 +262,24 @@ if selected_pair:
             st.warning("Resampling")
             # seg_image = sitk.Resample(seg_image, mri_image)
 
+        try:
+            mri_image, seg_image = crop_image_to_segmentation_sitk(mri_image, seg_image, 20)
+        except ValueError as e:
+            st.warning(f"Something wrong with the segmentation.")
+            logger.error(e, exc_info=True)
+
         mri_image = sitk.GetArrayFromImage(mri_image)
         seg_image = sitk.GetArrayFromImage(seg_image)
-
-        try:
-            mri_image, seg_image = crop_image_to_segmentation(mri_image, seg_image, 20)
-        except ValueError:
-            st.warning("Something wrong with the segmetnation.")
 
         # Rescale
         ncols = 5
         mri_image = rescale_intensity(make_grid(mri_image, ncols=ncols), 
                                       lower = lower, 
                                       upper = upper)
-        seg_image = make_grid((seg_image != 0), ncols=ncols).astype('int')
+        seg_image = make_grid(seg_image, ncols=ncols).astype('int')
 
         try:
-            mri_image = draw_contour(mri_image, seg_image != 0, width=2)
+            mri_image = draw_contour(mri_image, seg_image, width=2)
         except ValueError:
             st.warning("Something wrong with the segmetnation.")
 
@@ -240,8 +337,6 @@ if selected_pair:
             #     pass
             # if st.button("No"):
             #     pass
-            
-            
 
     # Example button to save the DataFrame
     if st.button('Save DataFrame'):
