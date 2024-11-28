@@ -33,7 +33,7 @@ def setup_logger(logger):
             logger.removeHandler(handler)
         
         # Add RichHandler if it's not present
-        rich_handler = RichHandler(console=False, rich_tracebacks=True)
+        rich_handler = RichHandler(console=False, rich_tracebacks=True, tracebacks_show_locals=True, locals_max_length=20)
         logger.addHandler(rich_handler)
         logger.setLevel(logging.INFO)  # Set the logging level if needed
 
@@ -93,6 +93,7 @@ def check_image_metadata(img1:sitk.Image, img2: sitk.Image, tolerance=1e-3):
     spacing_match = np.all(np.isclose(mri_image.GetSpacing(), seg_image.GetSpacing(), atol=tolerance))
     direction_match = np.all(np.isclose(mri_image.GetDirection(), seg_image.GetDirection(), atol=tolerance))
     origin_match = np.all(np.isclose(mri_image.GetOrigin(), seg_image.GetOrigin(), atol=tolerance))
+    size_match = np.array_equal(img1.GetSize(), img2.GetSize())
 
     if spacing_match and direction_match and origin_match:
         st.success("All metadata matches: spacing, direction, and origin.")
@@ -103,7 +104,10 @@ def check_image_metadata(img1:sitk.Image, img2: sitk.Image, tolerance=1e-3):
             st.error(f"Direction does not match: {img1.GetDirection() = } | {img2.GetDirection() = }")
         if not origin_match:
             st.error(f"Origin does not match: {img1.GetOrigin() = } | {img2.GetOrigin() = }")
-    return all([spacing_match, direction_match, origin_match])
+        if not size_match:
+            st.error(f"Size does not match: {img1.GetSize() = } | {img2.GetSize() = }")
+
+    return all([spacing_match, direction_match, origin_match, size_match])
 
 # Function to load state from a JSON file
 def load_state(file_path):
@@ -260,7 +264,7 @@ if selected_pair:
 
         if not same_spacial:
             st.warning("Resampling")
-            # seg_image = sitk.Resample(seg_image, mri_image)
+            seg_image = sitk.Resample(seg_image, mri_image)
 
         try:
             mri_image, seg_image = crop_image_to_segmentation_sitk(mri_image, seg_image, 20)

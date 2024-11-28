@@ -194,10 +194,12 @@ def crop_image_to_segmentation_sitk(mri_image: sitk.Image, seg_image: sitk.Image
     # Ensure the images are in the same space
     if mri_image.GetDimension() != seg_image.GetDimension():
         raise ValueError("MRI and segmentation images must have the same dimension.")
+    if not all([a == b for a, b in zip(mri_image.GetSize(), seg_image.GetSize())]):
+        raise ValueError("MRI and segmetnation images must have the same size!")
 
     # Compute the bounding box using LabelShapeStatisticsImageFilter
     label_shape_filter = sitk.LabelShapeStatisticsImageFilter()
-    label_shape_filter.Execute(seg_image)
+    label_shape_filter.Execute(seg_image != 0)
 
     # Get the bounding box for the largest label (assuming the largest segment is of interest)
     largest_label = label_shape_filter.GetLabels()[0]
@@ -218,6 +220,7 @@ def crop_image_to_segmentation_sitk(mri_image: sitk.Image, seg_image: sitk.Image
     z_max = min(mri_image.GetSize()[2], z_max + padding)
 
     logger.info(f"Find bounding box: {[x_min, y_min, z_min, x_max, y_max, z_max] = }")
+
     # Crop the MRI and segmentation images using the calculated bounding box
     cropped_mri = sitk.RegionOfInterest(mri_image, [x_max - x_min, y_max - y_min, z_max - z_min], [x_min, y_min, z_min])
     cropped_seg = sitk.RegionOfInterest(seg_image, [x_max - x_min, y_max - y_min, z_max - z_min], [x_min, y_min, z_min])
