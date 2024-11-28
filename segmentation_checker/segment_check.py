@@ -1,3 +1,4 @@
+from multiprocessing import Value
 import sys
 import re
 from turtle import onrelease
@@ -20,6 +21,9 @@ import logging
 from rich.logging import RichHandler
 from rich.traceback import install
 install()
+
+# -- inistilize states
+st.session_state['last_confirmation'] = st.session_state.get("last_confirmation", False)
 
 st.set_page_config(layout="wide")  
 st.write("# Segmentation Checker")
@@ -86,6 +90,12 @@ def clean_dataframe():
     r"""This cleans the dataframe and is called by a button after confirmation"""
     st.warning("Dataframe deleted")
     st.session_state.pop('dataframe')
+    if 'frame_path' in st.session_state:
+        p = Path(st.session_state.frame_path)
+        if p.is_file():
+            p.unlink()
+            st.warning("CSV file is deleted!")
+    
 
 def check_image_metadata(img1:sitk.Image, img2: sitk.Image, tolerance=1e-3):
     r"""This checks the meta information of the image and the segmentation to make sure they are the same."""
@@ -188,9 +198,10 @@ else:
 st.title("MRI and segmentation viewer")
 
 # Load Excel file into session state
-frame_path = Path(st.text_input("Frame Path:", value="./Checked_Images.csv", on_change=clean_dataframe))
+frame_path = Path(st.text_input("Frame Path:", value="./Checked_Images.csv", key="frame_path"))
 if 'dataframe' not in st.session_state:     
-    if frame_path.is_file():
+    if frame_path.is_file() and not st.session_state.last_confirmation:
+        logging.info(f"Loading dataframe from file: {frame_path}")
         dataframe = pd.read_csv(frame_path)
     else:
         dataframe = pd.DataFrame(columns=["PairID", "Checked", "NeedFix"])
@@ -202,6 +213,7 @@ if 'selection_index' not in st.session_state:
     st.session_state.selection_index = 0
 
 # Selection box
+intersection.sort()
 selected_index = st.selectbox("Select a pair", range(len(intersection)), format_func=lambda x: intersection[x], index=st.session_state.selection_index)
 if not selected_index == st.session_state.selection_index:
     # Need to trigger rerun here because the state change is not immediately reflected until next refresh
@@ -271,6 +283,9 @@ if selected_pair:
         except ValueError as e:
             st.warning(f"Something wrong with the segmentation.")
             logger.error(e, exc_info=True)
+        except IndexError as e:
+            st.warning("The segmentation seems to be empty")
+            logger.error(e, exc_info=True)
 
         mri_image = sitk.GetArrayFromImage(mri_image)
         seg_image = sitk.GetArrayFromImage(seg_image)
@@ -331,49 +346,50 @@ if selected_pair:
 
     with col3:
         # Clear button to clear all content of the dataframe
-        if st.button(':red[Delete All]'):
+        if st.button(':red[Delete All]') or st.session_state.last_confirmation:
             confirm_popup("Are you absolutely sure? You will clear all records!")
             answer = st.session_state.get('last_confirmation', 0)
+            logger.debug(f"{answer = }")
             if answer:
                 st.write("Done")
-            # if st.button(":red[Yes]"):
-                del st.session_state.dataframe
-            #     pass
-            # if st.button("No"):
-            #     pass
+                logger.warning("Deleted the dataframe")
+                clean_dataframe()
+            st.session_state.last_confirmation = 0
+            st.rerun()
 
     # Example button to save the DataFrame
     if st.button('Save DataFrame'):
         save_dataframe()
         st.success("DataFrame saved!")
 
-    st.download_button(
-        label='Download Dataframe',
-        data=st.session_state.dataframe.to_csv(index=False).encode('utf-8'),
-        file_name='dataframe.csv',
-        mime='text/csv'
-    )
+    if 'dataframe' in st.session_state:
+        st.download_button(
+            label='Download Dataframe',
+            data=st.session_state.dataframe.to_csv(index=False).encode('utf-8'),
+            file_name='dataframe.csv',
+            mime='text/csv'
+        )
 
-# Progress
-st.progress(len(st.session_state.dataframe) / float(len(intersection)),
-            text=f"Progress: ({len(st.session_state.dataframe)} / {len(intersection)})")
-if len(st.session_state.dataframe) == len(intersection):
-    st.success("You've viewed all the cases!")
+        # Progress
+        st.progress(len(st.session_state.dataframe) / float(len(intersection)),
+                    text=f"Progress: ({len(st.session_state.dataframe)} / {len(intersection)})")
+        if len(st.session_state.dataframe) == len(intersection):
+            st.success("You've viewed all the cases!")
 
-# Show dataframe
-with st.popover("Data Overview", use_container_width=True):
-    st.dataframe(st.session_state.dataframe, use_container_width=True)
+        # Show dataframe
+        with st.popover("Data Overview", use_container_width=True):
+            st.dataframe(st.session_state.dataframe, use_container_width=True)
 
-    # Show statistics
-    # Count the occurrences of each value in the 'NeedFix' column
-    need_fix_counts = st.session_state.dataframe['NeedFix'].value_counts()
+            # Show statistics
+            # Count the occurrences of each value in the 'NeedFix' column
+            need_fix_counts = st.session_state.dataframe['NeedFix'].value_counts()
 
-    # Create a pie chart using Plotly
-    fig = px.pie(
-        names=need_fix_counts.index,
-        values=need_fix_counts.values,
-        title="Need Fix Counts"
-    )
+            # Create a pie chart using Plotly
+            fig = px.pie(
+                names=need_fix_counts.index,
+                values=need_fix_counts.values,
+                title="Need Fix Counts"
+            )
 
-    # Display the pie chart in Streamlit
-    st.plotly_chart(fig)
+            # Display the pie chart in Streamlit
+            st.plotly_chart(fig)
