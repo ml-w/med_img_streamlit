@@ -1,3 +1,4 @@
+from genericpath import isfile
 from multiprocessing import Value
 import sys
 import re
@@ -70,6 +71,14 @@ def _exception_hook(exctype, value, traceback):
     logger.error("Uncaught exception", exc_info=(exctype, value, traceback))
 sys.excepthook = _exception_hook
 
+# -- Setup style
+# Load the CSS file
+def load_css(file_name):
+    with open(file_name) as f:
+        st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+load_css("./style.css")
+
+# -- Define some useful functions
 @st.cache_data
 def load_pair(MRI_DIR: Path, SEG_DIR: Path, id_globber:str = r"\w+\d+"):
     r"""This handles the matching between segmentation and images"""
@@ -95,7 +104,10 @@ def clean_dataframe():
         if p.is_file():
             p.unlink()
             st.warning("CSV file is deleted!")
-    
+
+def load_dataframe(p: Path):
+    if p.is_file():
+        st.session_state.dataframe = pd.read_csv(p)
 
 def check_image_metadata(img1:sitk.Image, img2: sitk.Image, tolerance=1e-3):
     r"""This checks the meta information of the image and the segmentation to make sure they are the same."""
@@ -119,6 +131,7 @@ def check_image_metadata(img1:sitk.Image, img2: sitk.Image, tolerance=1e-3):
 
     return all([spacing_match, direction_match, origin_match, size_match])
 
+# -- Load the state if it exists
 # Function to load state from a JSON file
 def load_state(file_path):
     try:
@@ -136,21 +149,23 @@ def save_state(file_path, state):
     except Exception as e:
         logging.error(f"Failed to save state: {e}")
 
+
 # File path to save/load the session state
 state_file = ".session_state.json"
 
-# Load the state if it exists
 if 'initialized' not in st.session_state:
     loaded_state = load_state(state_file)
     if loaded_state:
         st.session_state.mri_dir = Path(loaded_state.get('mri_dir', "/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2"))
         st.session_state.seg_dir = Path(loaded_state.get('seg_dir', "/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2_NPCseg"))
         st.session_state.id_globber = loaded_state.get('id_globber', r"\w{0,5}\d+")
+        st.session_state.frame_path = Path(loaded_state.get('frame_path', "./Checked_Images.csv"))
     else:
         # Initialize default settings if loading failed
         st.session_state.mri_dir = Path("/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2")
         st.session_state.seg_dir = Path("/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2_NPCseg")
         st.session_state.id_globber = r"\w{0,5}\d+"
+        st.session_state.frame_path = Path("Checked_Images.csv")
     st.session_state.initialized = True
 
 with st.expander("Directory Setup", expanded=st.session_state.get("require_setup", False)):
@@ -158,16 +173,27 @@ with st.expander("Directory Setup", expanded=st.session_state.get("require_setup
     st.session_state.mri_dir = Path(st.text_input("<MRI_DIR>:", value=str(st.session_state.mri_dir)))
     st.session_state.seg_dir = Path(st.text_input("<SEG_DIR>:", value=str(st.session_state.seg_dir)))
     st.session_state.id_globber = st.text_input("Regex ID globber:", value=st.session_state.get('id_globber', r"\w{0,5}\d+"))
+    st.session_state.frame_path = Path(st.text_input("Frame Path:", value=str(st.session_state.get('frame_path', "./Checked_Images.csv"))))
     
-    if st.button("Save States"):
-        # Save the current state
-        save_state(state_file, {
-            'mri_dir': str(st.session_state.mri_dir),
-            'seg_dir': str(st.session_state.seg_dir),
-            'id_globber': st.session_state.id_globber
-        })
-        st.rerun()
+    col1, col2, _ = st.columns([1, 1,3])
+    with col1:
+        if st.button("Save States", use_container_width=True):
+            # Save the current state
+            save_state(state_file, {
+                'mri_dir': str(st.session_state.mri_dir),
+                'seg_dir': str(st.session_state.seg_dir),
+                'id_globber': st.session_state.id_globber, 
+                'frame_path': str(st.session_state.frame_path)
+            })
+            st.rerun()
+    
+    with col2:
+        if st.button("Reload Dataframe", use_container_width=True, key="btn_reload_dataframe"):
+            # Reload the dataframe from specified framepath
+            load_dataframe(st.session_state.frame_path)
+            st.rerun()
 
+# * Setup paths
 # Target ID list
 with st.expander("Specify ID"):
     target_ids = st.text_input("CSV string", value="")
@@ -194,12 +220,12 @@ else:
     st.error(f"`{str(mri_dir)}` or `{str(seg_dir)}` not found!")
     st.stop()
 
-# Streamlit app
+# -- Streamlit app
 st.title("MRI and segmentation viewer")
 
 # Load Excel file into session state
-frame_path = Path(st.text_input("Frame Path:", value="./Checked_Images.csv", key="frame_path"))
-if 'dataframe' not in st.session_state:     
+frame_path = st.session_state.frame_path
+if 'dataframe' not in st.session_state:
     if frame_path.is_file() and not st.session_state.last_confirmation:
         logging.info(f"Loading dataframe from file: {frame_path}")
         dataframe = pd.read_csv(frame_path)

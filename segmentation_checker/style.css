@@ -1,0 +1,8 @@
+#btn_reload_dataframe {
+    background-color: brown;
+    color: white;
+    padding: 10px 20px; /* Adds padding */
+    border: none; /* Removes default border */
+    border-radius: 5px; /* Rounds the corners */
+    cursor: pointer; /* Changes cursor to pointer on hover */
+}
