@@ -4,7 +4,7 @@ import pandas as pd
 
 from anonymizer_utils.anonymize_dicom import *
 from ui_utils.ui_logic import *
-from config import unique_ids, ref_tags, update_tags, upload_df_id, tags_2_anon, tags_2_spare, new_tags
+from app_settings.config import unique_ids, ref_tags, update_tags, upload_df_id, tags_2_anon, tags_2_spare, new_tags
 
 def streamlit_app(): 
     # Initialize session states
@@ -12,9 +12,9 @@ def streamlit_app():
         st.session_state['user_folder'] = ''
     if 'folder' not in st.session_state:            # folder path to glob files
         st.session_state['folder'] = ''
-    if 'user_fformat' not in st.session_state:      # user input file format
+    if 'user_fformat' not in st.session_state:      # user input file extension
         st.session_state['user_fformat'] = ''
-    if 'fformat' not in st.session_state:           # file format to glob
+    if 'fformat' not in st.session_state:           # file extension to glob
         st.session_state['fformat'] = ''
     if 'dcm_info' not in st.session_state:          # all dcm files
         st.session_state['dcm_info'] = None 
@@ -22,7 +22,7 @@ def streamlit_app():
         st.session_state['uids'] = None
     if 'edit_df' not in st.session_state:           # data editor
         st.session_state['edit_df'] = None
-    if 'uploader_key' not in st.session_state:
+    if 'uploader_key' not in st.session_state:      # key (instance) of file_uploader
         st.session_state['uploader_key'] = 0
 
     # Page user interface
@@ -48,7 +48,7 @@ def streamlit_app():
             | Patient ID          | No default value. We advise using case numbers / random characters.                              |
             | Institution Name    | No default value. We advise using your initial.                                                  |
             | Patient Birth Date  | `1970/01/01` (Format: YYYY/MM/DD)                                                                  |
-            | Accession Number    | The first three characters representing the institution is removed. (e.g. `PXH12345` becomes `12345`) |
+            | Accession Number    | The first few characters representing the institution is removed. (e.g. `PXH12345` becomes `12345`) |
             
             - The other DICOM tags are anonymized by wiping out the original values.
             
@@ -84,13 +84,13 @@ def streamlit_app():
 
     # Error handling: When user's inputs are empty, show error msg
     if (st.session_state['folder'] and st.session_state['fformat']) == '': 
-        st.error(':warning: Please input file directory and file format.')
+        st.error(':warning: Please input file directory and file extension.')
         
     # Error handling: to avoid rerun of fetch file function in every refresh
     elif st.session_state['dcm_info'] is not None and user_folder == st.session_state['user_folder']:
         pass
         
-    # Feed user inputted folder dir and file format to fetch files
+    # Feed user inputted folder dir and file extension to fetch files
     else: 
         with st.spinner(text='Fetching files...'):
             try: 

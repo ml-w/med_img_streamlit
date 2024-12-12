@@ -57,7 +57,7 @@ datas, binaries, hiddenimports = collect_all('streamlit', include_py_files=False
 Run the following command to create the first `run_app.spec` file. 
 
 ```bash
-pyi-makespec --onefile --additional-hooks-dir=./hooks run_main.py
+pyi-makespec --onefile --additional-hooks-dir=./hooks run_app.py
 ```
 
 

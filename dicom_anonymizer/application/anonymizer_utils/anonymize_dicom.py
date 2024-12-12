@@ -7,7 +7,16 @@ from pydicom.tag import Tag
 import pandas as pd
 
 def create_output_dir(file_dir: str, folder_dir: Path) -> str:
-    """Generates the output directory path for anonymized files."""
+    """
+    Generates the output directory path for anonymized files.
+    
+    Args: 
+        file_dir (str): The DICOM file path. 
+        folder_dir (str): The folder directory of the DICOM file. 
+    
+    Returns:
+        str: A string which represents the output file path. 
+    """
     return str(file_dir).replace(str(folder_dir), str(folder_dir.parent / f"{folder_dir.name}-Anonymized"))
 
 def create_dcm_df(folder: str, fformat: str, unique_ids: list, ref_tags: list, new_tags: list) -> pd.DataFrame:
@@ -15,14 +24,14 @@ def create_dcm_df(folder: str, fformat: str, unique_ids: list, ref_tags: list, n
     Gathers the meta data of each DICOM file from the folder. 
         
     Args: 
-    - folder (str): The directory of folder with dicom files.
-    - fformat (str): The file format of the targeted files. 
-    - unique_ids (list): The list of columns used as primary keys.
-    - ref_tags (list): The list of columns to be shown in template.
-    - new_tags (list): The list of tags to be determine its existence. 
+        folder (str): The directory of folder with dicom files.
+        fformat (str): The file format of the targeted files. 
+        unique_ids (list): The list of columns used as primary keys.
+        ref_tags (list): The list of columns to be shown in template.
+        new_tags (list): The list of tags to be determine its existence. 
         
     Returns:
-    - dcm_info (pd.DataFrame): information of the dicom tags. 
+        pd.DataFrame: A dataframe which contains information of the dicom tags. 
     """
     folder_dir = Path(folder)
     dcm_info = {
@@ -58,7 +67,17 @@ def create_dcm_df(folder: str, fformat: str, unique_ids: list, ref_tags: list, n
     
     return df
 
-def consolidate_tags(row, update_tags): 
+def consolidate_tags(row: pd.Series, update_tags: dict) -> dict: 
+    """
+    Consolidate a dictionary of DICOM tag series number based on their respective common name. 
+    
+    Args:
+        row (pd.Series): The value represents the common name of the DICOM Tag.
+        update_tags (dict): The dictionary containing common name of DICOM Tag as key.
+        
+    Returns:
+        dict: An updated dictionary with DICOM tag series number as key.
+    """
     # DICOM Tag Table
     tag_dict = {
         'PatientName':              Tag((0x0010, 0x0010)),
@@ -76,25 +95,25 @@ def consolidate_tags(row, update_tags):
     
     return update
 
-def remove_info(dataset,
-                data_element,
-                va_type,
-                tags,
+def remove_info(dataset: Dataset,
+                data_element: DataElement,
+                va_type: Optional[list[str]],
+                tags: Optional[list[tuple]],
                 update: Optional[dict],
-                tags_2_spare):
+                tags_2_spare: list[tuple]):
     """
     Removes (anonymizes) or updates specific information from a DICOM dataset.
 
     Args:
-    - dataset: The DICOM dataset containing the data element to be modified.
-    - data_element: The specific data element (tag) to be processed.
-    - va_type (list, optional): A list of VR types that should be cleared.
-    - tags (list of tuples, optional): A list of DICOM tags for which the value should be cleared.
-    - update (dict, optional): A dictionary containing tags as keys and the new values as values. 
-    - tags_2_spare (list, optional): A list of tags that should be spared from deletion or anonymization. 
+        dataset: The DICOM dataset containing the data element to be modified.
+        data_element: The specific data element (tag) to be processed.
+        va_type (list, optional): A list of VR types that should be cleared.
+        tags (list of tuples, optional): A list of DICOM tags for which the value should be cleared.
+        update (dict, optional): A dictionary containing tags as keys and the new values as values. 
+        tags_2_spare (list, optional): A list of tags that should be spared from deletion or anonymization. 
 
     Returns:
-    - None: The function modifies the data element in place and does not return a value.
+        None: The function modifies the data element in place and does not return a value.
     """
     va_type=["PN", "LO", "SH", "AE", "DT", "DA"]
     # Spare sequence name
@@ -103,9 +122,11 @@ def remove_info(dataset,
 
     # Delete by value group
     if data_element.VR.strip() in [v.strip() for v in va_type]:
-        data_element.value = ""
+        try:
+            data_element.value = "Anonymized"
+        except:
+            data_element.value = ""
         
-
     # Delete by tag
     if data_element.tag in tags:
         data_element.value = ""
@@ -114,10 +135,13 @@ def remove_info(dataset,
         keylist = list(update.keys())
         if data_element.tag in list(update.keys()):
             data_element.value = update[data_element.tag]
-
-
-def anonymize(file_dir, output_dir, tags=None, update: Optional[dict] = None, tags_2_spare: Optional[dict] = None,
-               tags_2_create: Optional[dict] = None):
+            
+def anonymize(file_dir: str, 
+              output_dir: str, 
+              tags: Optional[list] = None, 
+              update: Optional[dict] = None, 
+              tags_2_spare: Optional[dict] = None,
+              tags_2_create: Optional[dict] = None):
     """
     - Anonymizes a DICOM file by removing sensitive information based on specified tags. 
     - If no tags are provided, defaults to a predefined list. 
@@ -137,19 +161,16 @@ def anonymize(file_dir, output_dir, tags=None, update: Optional[dict] = None, ta
 
 
     Args:
-    - file_dir (str): The path to the input DICOM file.
-    - output_dir (str): The path where the modified DICOM file will be saved.
-    - tags (list of tuples, optional): A list of DICOM tags to be anonymized. If None, default tags for sensitive patient information are used.
-    - update (dict, optional): A dictionary of tags and their new values for updates.
-    - tags_2_spare (list, optional): Tags that should not be modified.
-    - tags_2_create (list, optional): Tags to be created.
+        file_dir (str): The path to the input DICOM file.
+        output_dir (str): The path where the modified DICOM file will be saved.
+        tags (list of tuples, optional): A list of DICOM tags to be anonymized. If None, default tags for sensitive patient information are used.
+        update (dict, optional): A dictionary of tags and their new values for updates.
+        tags_2_spare (list, optional): Tags that should not be modified.
+        tags_2_create (list, optional): Tags to be created.
 
     Returns:
-    - int: Returns 0 upon successful processing.
-
+        int: Returns 0 upon successful processing.
     """
-    
-    
     # Default tags to remove for anonymization
     if tags is None:
         tags = [
