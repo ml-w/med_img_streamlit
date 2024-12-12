@@ -11,7 +11,8 @@ A Streamlit application for anonymizing DICOM files with an interactive user int
 - Python=3.10
 - Streamlit=1.29
 - PyInstaller=5.10
-- Pandas
+- Pandas=2.2.3
+- pydicom=3.0.1
 
 ## Usage
 1. Run the application using executable (only support Windows): 
