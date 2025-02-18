@@ -18,7 +18,7 @@ import numpy as np
 import json
 
 from typing import *
-import logging
+import logging, time
 from rich.logging import RichHandler
 from rich.traceback import install
 install()
@@ -103,9 +103,15 @@ def clean_dataframe():
         p = Path(st.session_state.frame_path)
         if p.is_file():
             p.unlink()
-            st.warning("CSV file is deleted!")
+            st.warning("CSV file is deleted! Reloading in 3 second...")
+    # this stops the popup
+    st.session_state.pop('last_confirmation')
+    # reload the dataframe
+    time.sleep(3)
+    st.stop()
 
-def load_dataframe(p: Path):
+def load_dataframe(p: Path = None):
+    p = p or Path(st.session_state.get('frame_path', None))
     if p.is_file():
         st.session_state.dataframe = pd.read_csv(p)
 
@@ -372,16 +378,16 @@ if selected_pair:
 
     with col3:
         # Clear button to clear all content of the dataframe
-        if st.button(':red[Delete All]') or st.session_state.last_confirmation:
+        if st.button(':red[Delete All]'):
             confirm_popup("Are you absolutely sure? You will clear all records!")
-            answer = st.session_state.get('last_confirmation', 0)
-            logger.debug(f"{answer = }")
-            if answer:
-                st.write("Done")
-                logger.warning("Deleted the dataframe")
-                clean_dataframe()
-            st.session_state.last_confirmation = 0
-            st.rerun()
+
+        answer = st.session_state.get('last_confirmation', 0)
+        if answer:
+            st.write("Done")
+            logger.warning("Deleted the dataframe")
+            clean_dataframe()
+        else:
+            st.session_state.pop('last_confirmation')
 
     # Example button to save the DataFrame
     if st.button('Save DataFrame'):
