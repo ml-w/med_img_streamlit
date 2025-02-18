@@ -1,5 +1,10 @@
 streamlit
-simpleitk
+simpleitk 
 opencv-python
 pandas
 numpy
+plotly
+tqdm
+opencv-python >= 4.6.0
+pydicom >= 3.0.1
+rich
