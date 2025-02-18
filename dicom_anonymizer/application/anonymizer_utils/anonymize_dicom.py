@@ -1,10 +1,15 @@
 import pydicom
+import rich
+import pdb
 from pydicom.errors import InvalidDicomError
 from pydicom import *
 from pathlib import Path
 from typing import Optional
 from pydicom.tag import Tag
 import pandas as pd
+import logging
+
+anon_logger = logging.getLogger("anonimizer")
 
 def create_output_dir(file_dir: str, folder_dir: Path) -> str:
     """
@@ -17,6 +22,7 @@ def create_output_dir(file_dir: str, folder_dir: Path) -> str:
     Returns:
         str: A string which represents the output file path. 
     """
+    anon_logger.info(rich.inspect(file_dir))
     return str(file_dir).replace(str(folder_dir), str(folder_dir.parent / f"{folder_dir.name}-Anonymized"))
 
 def create_dcm_df(folder: str, fformat: str, unique_ids: list, ref_tags: list, new_tags: list) -> pd.DataFrame:
@@ -32,17 +38,24 @@ def create_dcm_df(folder: str, fformat: str, unique_ids: list, ref_tags: list, n
         
     Returns:
         pd.DataFrame: A dataframe which contains information of the dicom tags. 
+    
+    .. note::
+        Format can be a single wildcard to glob all files, if nothing is glob, this will
+        return an empty array.
     """
     folder_dir = Path(folder)
-    dcm_info = {
-        'folder_dir': [], 
+    dcm_info = {    
+        'folder_dir': [],
+        'file_dir': [], 
+        'PatientID': [], 
+        'PatientName': [], 
+        'AccessionNum': [], 
         'output_dir': []
     }
     dcm_info.update({dcm_tag: [] for dcm_tag in (unique_ids + ref_tags + new_tags)})
-    
     for sub_folder in folder_dir.iterdir():
         if sub_folder.is_dir():
-            for file_dir in sub_folder.rglob(f"*.{fformat}"):
+            for file_dir in sub_folder.rglob(f"*.{fformat.lstrip('.')}" if not fformat == '*' else fformat):
                 dcm_info['folder_dir'].append(str(sub_folder))
                 dcm_info['output_dir'].append(create_output_dir(sub_folder, folder_dir))
 
@@ -57,11 +70,11 @@ def create_dcm_df(folder: str, fformat: str, unique_ids: list, ref_tags: list, n
                             dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
                     
                 except Exception as e:
-                    print(f"{e = }")
+                    anon_logger.exception(e)
 
                 break   # only the read the 1st file of the subholder
     
-    df = pd.DataFrame(dcm_info)
+    df = pd.DataFrame.from_dict(dcm_info, orient='index').transpose()
     df['PK'] = df[unique_ids].astype(str).agg('_'.join, axis=1)
     df.set_index('PK', inplace=True)
     
