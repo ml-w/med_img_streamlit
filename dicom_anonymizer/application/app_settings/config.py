@@ -32,7 +32,10 @@ upload_df_id = 'AccessionNumber'
 tags_2_anon = None
 
 # DICOM tags: Not anonymized (list)
-tags_2_spare = []
+tags_2_spare = [(0x0018,0x1030), # Protocol Name
+                (0x0018,0x0022), # Scan Options
+                (0x2001,0x100B), # Scan direction
+                (0x0008,0x103E)] # Series description
 
 # DICOM tags: to be Created (dict: 'TagName': (options))
 new_tags = {

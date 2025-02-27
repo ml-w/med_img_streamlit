@@ -207,11 +207,15 @@ def anonymize(file_dir: str,
             (0x0032, 0x1032),  # Requesting Physician
             (0x0008, 0x1040),  # Institutional Department Name
         ]
+        
+    # make sure their format is right
+    if len(tags_2_spare):
+        tags_2_spare = [Tag(t) for t in tags_2_spare]
+        
     try:
-        f = pydicom.dcmread(str(file_dir))
+        f = pydicom.dcmread(str(file_dir), force=True) # force will allow reading private tags
         
         # Remove and update tags
-        f.remove_private_tags()
         f.walk(lambda x1, x2: remove_info(x1, x2, tags=tags, va_type=[], update=update, tags_2_spare=tags_2_spare))
         
         # Create new tags
