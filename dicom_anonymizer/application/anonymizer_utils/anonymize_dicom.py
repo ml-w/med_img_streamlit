@@ -19,7 +19,14 @@ def create_output_dir(file_dir: str, folder_dir: Path) -> str:
     """
     return str(file_dir).replace(str(folder_dir), str(folder_dir.parent / f"{folder_dir.name}-Anonymized"))
 
-def create_dcm_df(folder: str, fformat: str, unique_ids: list, ref_tags: list, new_tags: list) -> pd.DataFrame:
+def create_dcm_df(
+    folder: str,
+    fformat: str,
+    unique_ids: list,
+    ref_tags: list,
+    new_tags: list,
+    series_mode: bool = False
+) -> pd.DataFrame:
     """
     Gathers the meta data of each DICOM file from the folder. 
         
@@ -35,36 +42,59 @@ def create_dcm_df(folder: str, fformat: str, unique_ids: list, ref_tags: list, n
     """
     folder_dir = Path(folder)
     dcm_info = {
-        'folder_dir': [], 
+        'folder_dir': [],
         'output_dir': []
     }
     dcm_info.update({dcm_tag: [] for dcm_tag in (unique_ids + ref_tags + new_tags)})
-    
-    for sub_folder in folder_dir.iterdir():
-        if sub_folder.is_dir():
-            for file_dir in sub_folder.rglob(f"*.{fformat}"):
-                dcm_info['folder_dir'].append(str(sub_folder))
-                dcm_info['output_dir'].append(create_output_dir(sub_folder, folder_dir))
 
-                try:
-                    f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
-                    
-                    # Gather information from DICOM tags
-                    for dcm_tag in (unique_ids + ref_tags + new_tags):
-                        if dcm_tag == 'PatientName': 
-                            dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
-                        else: 
-                            dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
-                    
-                except Exception as e:
-                    print(f"{e = }")
+    if series_mode:
+        for file_dir in folder_dir.rglob(f"*.{fformat}"):
+            series_dir = file_dir.parent
+            dcm_info['folder_dir'].append(str(series_dir))
+            dcm_info['output_dir'].append(create_output_dir(series_dir, folder_dir))
 
-                break   # only the read the 1st file of the subholder
-    
-    df = pd.DataFrame(dcm_info)
+            try:
+                f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
+
+                # Gather information from DICOM tags
+                for dcm_tag in (unique_ids + ref_tags + new_tags):
+                    if dcm_tag == 'PatientName':
+                        dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
+                    else:
+                        dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
+
+            except Exception as e:
+                print(f"{e = }")
+
+        df = pd.DataFrame(dcm_info)
+        df.drop_duplicates(subset=unique_ids, inplace=True)
+    else:
+        for sub_folder in folder_dir.iterdir():
+            if sub_folder.is_dir():
+                for file_dir in sub_folder.rglob(f"*.{fformat}"):
+                    dcm_info['folder_dir'].append(str(sub_folder))
+                    dcm_info['output_dir'].append(create_output_dir(sub_folder, folder_dir))
+
+                    try:
+                        f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
+
+                        # Gather information from DICOM tags
+                        for dcm_tag in (unique_ids + ref_tags + new_tags):
+                            if dcm_tag == 'PatientName':
+                                dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
+                            else:
+                                dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
+
+                    except Exception as e:
+                        print(f"{e = }")
+
+                    break   # only the read the 1st file of the subholder
+
+        df = pd.DataFrame(dcm_info)
+
     df['PK'] = df[unique_ids].astype(str).agg('_'.join, axis=1)
     df.set_index('PK', inplace=True)
-    
+
     return df
 
 def consolidate_tags(row: pd.Series, update_tags: dict) -> dict: 

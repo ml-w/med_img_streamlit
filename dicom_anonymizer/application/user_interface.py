@@ -4,7 +4,18 @@ import pandas as pd
 
 from anonymizer_utils.anonymize_dicom import *
 from ui_utils.ui_logic import *
-from app_settings.config import unique_ids, ref_tags, update_tags, upload_df_id, tags_2_anon, tags_2_spare, new_tags
+from app_settings.config import (
+    unique_ids,
+    ref_tags,
+    update_tags,
+    upload_df_id,
+    tags_2_anon,
+    tags_2_spare,
+    new_tags,
+    series_unique_ids,
+    series_ref_tags,
+    series_update_tags,
+)
 
 def streamlit_app(): 
     # Initialize session states
@@ -17,13 +28,15 @@ def streamlit_app():
     if 'fformat' not in st.session_state:           # file extension to glob
         st.session_state['fformat'] = ''
     if 'dcm_info' not in st.session_state:          # all dcm files
-        st.session_state['dcm_info'] = None 
+        st.session_state['dcm_info'] = None
     if 'uids' not in st.session_state:              # list of unique IDs
         st.session_state['uids'] = None
     if 'edit_df' not in st.session_state:           # data editor
         st.session_state['edit_df'] = None
     if 'uploader_key' not in st.session_state:      # key (instance) of file_uploader
         st.session_state['uploader_key'] = 0
+    if 'series_mode' not in st.session_state:       # anonymize per series or patient
+        st.session_state['series_mode'] = False
 
     # Page user interface
     st.set_page_config(page_title = 'DICOM Anonymizer')
@@ -65,9 +78,18 @@ def streamlit_app():
     )
 
     user_fformat = st.text_input(
-        'File extension', 
+        'File extension',
         placeholder='e.g., "dcm"'
     )
+
+    series_mode_box = st.checkbox("Anonymize per series", value=st.session_state['series_mode'])
+    if series_mode_box != st.session_state['series_mode']:
+        st.session_state['dcm_info'] = None
+    st.session_state['series_mode'] = series_mode_box
+
+    active_unique_ids = series_unique_ids if st.session_state['series_mode'] else unique_ids
+    active_ref_tags = series_ref_tags if st.session_state['series_mode'] else ref_tags
+    active_update_tags = series_update_tags if st.session_state['series_mode'] else update_tags
 
     # When 'fetch' button is triggered, save user's inputs and reset last dcm_info in st.session_states
     if st.button('Fetch files', type='primary'): 
@@ -93,16 +115,20 @@ def streamlit_app():
     # Feed user inputted folder dir and file extension to fetch files
     else: 
         with st.spinner(text='Fetching files...'):
-            try: 
+            try:
                 st.session_state['dcm_info'] = create_dcm_df(
-                    folder=st.session_state['folder'], 
-                    fformat=st.session_state['fformat'], 
-                    unique_ids=unique_ids, 
-                    ref_tags=ref_tags, 
-                    new_tags=list(new_tags.keys())
+                    folder=st.session_state['folder'],
+                    fformat=st.session_state['fformat'],
+                    unique_ids=active_unique_ids,
+                    ref_tags=active_ref_tags,
+                    new_tags=list(new_tags.keys()),
+                    series_mode=st.session_state['series_mode']
                 )
-                st.session_state['uids'] = st.session_state['dcm_info'][(unique_ids + ref_tags)].drop_duplicates()
-            except: 
+                uids_df = st.session_state['dcm_info'][active_unique_ids + active_ref_tags]
+                if not st.session_state['series_mode']:
+                    uids_df = uids_df.drop_duplicates()
+                st.session_state['uids'] = uids_df
+            except Exception:
                 st.error(':warning: We cannot find any files in the file extension in the directory.')
 
     # When fetch file function is not triggered, display nothing
@@ -111,13 +137,16 @@ def streamlit_app():
 
     # When files are found, display unique ID df
     else:     
-        edit_df = create_update_cols(st.session_state['uids'], update_tags)
+        edit_df = create_update_cols(st.session_state['uids'], active_update_tags)
         st.session_state['edit_df'] = edit_df
-        
-        st.success('''
-                We have found the following unique cases - :card_file_box:  
+
+        case_desc = 'unique series' if st.session_state['series_mode'] else 'unique cases'
+        st.success(
+            f'''
+                We have found the following {case_desc} - :card_file_box:
                 :point_down: You may download the auto-generated template by clicking the "Download" button below.
-                ''')
+                '''
+        )
         
         # A placeholder for description of creating new tags
         desc_new_tag = st.empty()
@@ -166,7 +195,7 @@ def streamlit_app():
                 pass
             else: 
                 # Error checking
-                error_message = validate_upload(st.session_state['edit_df'], upload_df, update_tags, upload_df_id)
+                error_message = validate_upload(st.session_state['edit_df'], upload_df, active_update_tags, upload_df_id)
 
                 if error_message:
                     st.error(error_message)
@@ -175,7 +204,7 @@ def streamlit_app():
                 else:
                     upload_df = upload_df.fillna('').astype(str)
                     try: 
-                        edit_df = update_data_editor(st.session_state['edit_df'], upload_df, update_tags)
+                        edit_df = update_data_editor(st.session_state['edit_df'], upload_df, active_update_tags, active_unique_ids)
                     except Exception as e: 
                         upload_error.error(':warning: Error: Unable to read uploaded file. Please input your updates in the template and upload again.')
 
@@ -223,7 +252,7 @@ def streamlit_app():
                         folder_dir = Path(row['folder_dir'])
                         for file_dir in folder_dir.rglob(f"*.{st.session_state['fformat']}"):                        
                             output_dir = f"{row['output_dir']}/{Path(file_dir).name}"
-                            update = consolidate_tags(row, update_tags)
+                            update = consolidate_tags(row, active_update_tags)
 
                             anonymize(
                                 file_dir=file_dir, 
@@ -235,6 +264,6 @@ def streamlit_app():
                             )
             
                 st.write(f'''
-                        :star2: Anonymized files are written in:  
+                        :star2: Anonymized files are written in:
                         :open_file_folder: :blue[{st.session_state['folder']}-Anonymized]
                         ''')

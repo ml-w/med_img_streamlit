@@ -27,6 +27,21 @@ update_tags = {
 # DICOM tag: used as identifier in user-uploaded file (str)
 upload_df_id = 'AccessionNumber'
 
+# Series level configuration
+# DICOM tags: used as Unique identifiers when anonymizing per series (list)
+series_unique_ids = [
+    'PatientID',
+    'SeriesInstanceUID'
+]
+
+# DICOM tags: to be Shown in template for user's reference at series level (list)
+series_ref_tags = ref_tags + [upload_df_id, 'PatientName', 'SeriesDescription']
+
+# DICOM tags: to be Anonymized default values or user's inputs at series level (dict)
+series_update_tags = update_tags | {
+    'SeriesDescription': ''
+}
+
 # DICOM tags: to be Anonymized as empty string (None-default or list)
 # >> Example: tags_2_anon = [(0x0010, 0x0010), (0x0010, 0x0020)]
 tags_2_anon = None
