@@ -9,10 +9,12 @@ unique_ids = [
 
 # DICOM tags: to be Shown in template for user's reference (list)
 ref_tags = [
-    'PatientBirthDate', 
-    'PatientSex', 
-    'PatientAge', 
-    'StudyDate', 
+    'PatientBirthDate',
+    'PatientSex',
+    'PatientAge',
+    'StudyDate',
+    'SeriesInstanceUID',
+    'SOPInstanceUID',
 ]
 
 # DICOM tags: to be Anonymized default values or user's inputs (dict)
@@ -26,6 +28,7 @@ update_tags = {
 
 # DICOM tag: used as identifier in user-uploaded file (str)
 upload_df_id = 'AccessionNumber'
+series_upload_df_id = 'SeriesInstanceUID'
 
 # Series level configuration
 # DICOM tags: used as Unique identifiers when anonymizing per series (list)
@@ -35,7 +38,7 @@ series_unique_ids = [
 ]
 
 # DICOM tags: to be Shown in template for user's reference at series level (list)
-series_ref_tags = ref_tags + [upload_df_id, 'PatientName', 'SeriesDescription']
+series_ref_tags = ref_tags + ['AccessionNumber', 'PatientName', 'SeriesDescription']
 
 # DICOM tags: to be Anonymized default values or user's inputs at series level (dict)
 series_update_tags = update_tags | {

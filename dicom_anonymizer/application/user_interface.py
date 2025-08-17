@@ -9,6 +9,7 @@ from app_settings.config import (
     ref_tags,
     update_tags,
     upload_df_id,
+    series_upload_df_id,
     tags_2_anon,
     tags_2_spare,
     new_tags,
@@ -37,39 +38,13 @@ def streamlit_app():
         st.session_state['uploader_key'] = 0
     if 'series_mode' not in st.session_state:       # anonymize per series or patient
         st.session_state['series_mode'] = False
+    if 'matcher_id' not in st.session_state:        # identifier column in templates
+        st.session_state['matcher_id'] = upload_df_id
 
     # Page user interface
     st.set_page_config(page_title = 'DICOM Anonymizer')
     st.write('# DICOM Anonymizer:hospital::card_file_box:')
     
-    # A container of user instruction
-    with st.expander(':bulb: **Click Here for User Tips on Best Practices**'): 
-        st.markdown(
-            f'''
-            ### Folder Preparation
-            - :red[Large Folders]: If your folder contains more than 10,000 DICOM files, consider splitting it into smaller batches to optimize processing time.
-            - :red[Scan Position]: It is recommended to include only one body part scanned per folder for consistency.
-            
-            ### Modification of DICOM Tag values
-            - :red[Update Input Template]: Update your inputs using the automatically generated template. If you prefer to use your own template, please ensure that you include the column "{upload_df_id}" as an identifier for the cases.
-            - :red[Avoid Empty Fields]: When uploading the updated template, ensure that there are NO empty inputs in the columns that start with "Update" (e.g. `Update_PatientName`). The values under these columns will be directly applied to the anonymized files. 
-            - :red[Default values]: You can modify the following DICOM tags. For your convenience, default values have been pre-set for certain tags to streamline the anonymization process.
-            
-            | DICOM Tag           | Default value                                                                                    |
-            |---------------------|--------------------------------------------------------------------------------------------------|
-            | Patient Name        | No default value. We advise using case numbers / random characters.                              |
-            | Patient ID          | No default value. We advise using case numbers / random characters.                              |
-            | Institution Name    | No default value. We advise using your initial.                                                  |
-            | Patient Birth Date  | `1970/01/01` (Format: YYYY/MM/DD)                                                                  |
-            | Accession Number    | The first few characters representing the institution is removed. (e.g. `PXH12345` becomes `12345`) |
-            
-            - The other DICOM tags are anonymized by wiping out the original values.
-            
-            ### Folder Output
-            - The anonymized files will be saved in a new folder named `"[your file path]-Anonymized"`. For example, if you file path is `"C:/Documents/dicom"`, the destination will be `"C:/Documents/dicom-Anonymized"`.
-
-            '''
-        )
     
     # Capture user's input of folder directory
     user_folder = st.text_input(
@@ -87,9 +62,44 @@ def streamlit_app():
         st.session_state['dcm_info'] = None
     st.session_state['series_mode'] = series_mode_box
 
+    if st.session_state['series_mode']:
+        st.session_state['matcher_id'] = series_upload_df_id
+    elif st.session_state['matcher_id'] == series_upload_df_id:
+        st.session_state['matcher_id'] = upload_df_id
+
     active_unique_ids = series_unique_ids if st.session_state['series_mode'] else unique_ids
     active_ref_tags = series_ref_tags if st.session_state['series_mode'] else ref_tags
     active_update_tags = series_update_tags if st.session_state['series_mode'] else update_tags
+    active_upload_df_id = st.session_state['matcher_id']
+
+    # A container of user instruction
+    with st.expander(':bulb: **Click Here for User Tips on Best Practices**'):
+        st.markdown(
+            f'''
+            ### Folder Preparation
+            - :red[Large Folders]: If your folder contains more than 10,000 DICOM files, consider splitting it into smaller batches to optimize processing time.
+            - :red[Scan Position]: It is recommended to include only one body part scanned per folder for consistency.
+
+            ### Modification of DICOM Tag values
+            - :red[Update Input Template]: Update your inputs using the automatically generated template. If you prefer to use your own template, please ensure that you include the column "{active_upload_df_id}" as an identifier for the cases.
+            - :red[Avoid Empty Fields]: When uploading the updated template, ensure that there are NO empty inputs in the columns that start with "Update" (e.g. `Update_PatientName`). The values under these columns will be directly applied to the anonymized files.
+            - :red[Default values]: You can modify the following DICOM tags. For your convenience, default values have been pre-set for certain tags to streamline the anonymization process.
+
+            | DICOM Tag           | Default value     |
+            |---------------------|-----------------------------------------------------------------------------------------------|
+            | Patient Name        | No default value. We advise using case numbers / random characters.     |
+            | Patient ID          | No default value. We advise using case numbers / random characters.     |
+            | Institution Name    | No default value. We advise using your initial.     |
+            | Patient Birth Date  | `1970/01/01` (Format: YYYY/MM/DD)       |
+            | Accession Number    | The first few characters representing the institution is removed. (e.g. `PXH12345` becomes `12345`) |
+
+            - The other DICOM tags are anonymized by wiping out the original values.
+
+            ### Folder Output
+            - The anonymized files will be saved in a new folder named `"[your file path]-Anonymized"`. For example, if you file path is `"C:/Documents/dicom"`, the destination will be `"C:/Documents/dicom-Anonymized"`.
+
+            '''
+        )
 
     # When 'fetch' button is triggered, save user's inputs and reset last dcm_info in st.session_states
     if st.button('Fetch files', type='primary'): 
@@ -132,11 +142,23 @@ def streamlit_app():
                 st.error(':warning: We cannot find any files in the file extension in the directory.')
 
     # When fetch file function is not triggered, display nothing
-    if st.session_state['dcm_info'] is None: 
+    if st.session_state['dcm_info'] is None:
         pass
 
     # When files are found, display unique ID df
-    else:     
+    else:
+        if (not st.session_state['series_mode'] and
+                st.session_state['dcm_info'][upload_df_id].isnull().any()):
+            st.warning(':warning: Some DICOM files are missing AccessionNumber. Please select a matcher column.')
+            options = [col for col in [upload_df_id, 'PatientID', 'SeriesInstanceUID', 'SOPInstanceUID']
+                       if col in st.session_state['dcm_info'].columns]
+            st.session_state['matcher_id'] = st.selectbox(
+                'Select matcher column',
+                options,
+                index=options.index(st.session_state['matcher_id']) if st.session_state['matcher_id'] in options else 0,
+            )
+        active_upload_df_id = st.session_state['matcher_id']
+
         edit_df = create_update_cols(st.session_state['uids'], active_update_tags)
         st.session_state['edit_df'] = edit_df
 
@@ -169,8 +191,8 @@ def streamlit_app():
         
         # Get user uploaded file
         upload_file = upload_function.file_uploader(
-            label=f'Choose a csv/excel file, which must contain column "{upload_df_id}" as identifer.', 
-            type=['csv', 'xsl', 'xslx'], 
+            label=f'Choose a csv/excel file, which must contain column "{active_upload_df_id}" as identifer.',
+            type=['csv', 'xsl', 'xslx'],
             key = st.session_state['uploader_key']
             )
         
@@ -195,7 +217,7 @@ def streamlit_app():
                 pass
             else: 
                 # Error checking
-                error_message = validate_upload(st.session_state['edit_df'], upload_df, active_update_tags, upload_df_id)
+                error_message = validate_upload(st.session_state['edit_df'], upload_df, active_update_tags, active_upload_df_id)
 
                 if error_message:
                     st.error(error_message)
@@ -230,11 +252,11 @@ def streamlit_app():
         for dcm_tag, options in new_tags.items():
             if st.session_state['dcm_info'][dcm_tag].isnull().any():
                 
-                notag_ids = st.session_state['dcm_info'].loc[st.session_state['dcm_info'][dcm_tag].isnull(), upload_df_id].unique().tolist()
+                notag_ids = st.session_state['dcm_info'].loc[st.session_state['dcm_info'][dcm_tag].isnull(), active_upload_df_id].unique().tolist()
                 notag_ids_str = ','.join(notag_ids)
                 desc_new_tag.warning(
                     f'''
-                    :warning: We have identified that some DICOM series are missing the DICOM Tag :blue[{dcm_tag}] - {upload_df_id}: `{notag_ids_str}`.
+                    :warning: We have identified that some DICOM series are missing the DICOM Tag :blue[{dcm_tag}] - {active_upload_df_id}: `{notag_ids_str}`.
                     '''
                 )
                 tags_2_create[dcm_tag] = create_new_tag.selectbox(f'Please select a value for DICOM Tag: `{dcm_tag}`.', options)

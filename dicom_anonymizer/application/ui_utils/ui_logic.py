@@ -104,11 +104,11 @@ def validate_upload(edit_df: pd.DataFrame, upload_df: pd.DataFrame, update_tags:
         return f':warning: Error in uploaded file: There are empty values in the following columns: :blue[{", ".join(empty_col)}]'
     
     # Error checking of columns in user uploaded file
-    if f'Update_{upload_df_id}' not in upload_df:
-        return f':warning: Error in uploaded file: **Column "Update_{upload_df_id}"** must be contained.'
-    
     if f'{upload_df_id}' not in upload_df:
         return f':warning: Error in uploaded file: **Column "{upload_df_id}"** must be contained.'
+
+    if upload_df_id in update_tags and f'Update_{upload_df_id}' not in upload_df:
+        return f':warning: Error in uploaded file: **Column "Update_{upload_df_id}"** must be contained.'
     
     # Error checking of unmatched PatientIDs
     unmatched_ids = check_unmatched_rows(upload_df, edit_df, upload_df_id)
