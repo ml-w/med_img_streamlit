@@ -9,16 +9,19 @@ unique_ids = [
 
 # DICOM tags: to be Shown in template for user's reference (list)
 ref_tags = [
-    'PatientBirthDate', 
-    'PatientSex', 
-    'PatientAge', 
-    'StudyDate', 
+    'PatientBirthDate',
+    'PatientSex',
+    'PatientAge',
+    'StudyDate',
+    'StudyTime',
+    'BodyPartExamined'
 ]
 
 # DICOM tags: to be Anonymized default values or user's inputs (dict)
 update_tags = {
     'PatientName':      '',                                     # for user's inputs
     'PatientID':        '',                                     # for user's inputs
+    'BodyPartExamined': ''
     # 'InstitutionName':  '',                                     # for user's inputs
     # 'PatientBirthDate': '19700101',                             # reset patient's birth date to 0
     # 'AccessionNumber':  lambda x: re.sub(r'^[a-zA-Z]+', '', x)  # remove the first 3 characters
@@ -26,6 +29,22 @@ update_tags = {
 
 # DICOM tag: used as identifier in user-uploaded file (str)
 upload_df_id = 'AccessionNumber'
+series_upload_df_id = 'SeriesInstanceUID'
+
+# Series level configuration
+# DICOM tags: used as Unique identifiers when anonymizing per series (list)
+series_unique_ids = [
+    'PatientID',
+    'SeriesInstanceUID'
+]
+
+# DICOM tags: to be Shown in template for user's reference at series level (list)
+series_ref_tags = ref_tags + ['SeriesInstanceUID']
+
+# DICOM tags: to be Anonymized default values or user's inputs at series level (dict)
+series_update_tags = update_tags | {
+    'SeriesDescription': ''
+}
 
 # DICOM tags: to be Anonymized as empty string (None-default or list)
 # >> Example: tags_2_anon = [(0x0010, 0x0010), (0x0010, 0x0020)]

@@ -13,34 +13,34 @@ def create_update_cols(udf: pd.DataFrame, update_tags: dict) -> pd.DataFrame:
     """
     for tag, rule in update_tags.items():
         if callable(rule): 
-            udf[f'Update_{tag}'] = udf[tag].apply(rule)
+            udf.loc[:, f'Update_{tag}'] = udf[tag].apply(rule)
         else: 
-            udf[f'Update_{tag}'] = rule
+            udf.loc[:, f'Update_{tag}'] = rule
     return udf
             
 
-def update_data_editor(edit_df: pd.DataFrame, upload_df: pd.DataFrame, update_tags: dict) -> pd.DataFrame:
+def update_data_editor(edit_df: pd.DataFrame, upload_df: pd.DataFrame, update_tags: dict, unique_ids: list) -> pd.DataFrame:
     """
-    Updates the specified columns in an existing DataFrame (edit_df) with values from an uploaded DataFrame (upload_df). 
+    Updates the specified columns in an existing DataFrame (edit_df) with values from an uploaded DataFrame (upload_df).
 
     Args:
         edit_df (pd.DataFrame): DataFrame containing the original data to be updated.
         upload_df (pd.DataFrame): DataFrame with new values to apply to matching rows.
         update_tags (dict): Column tags to update in the edit_df.
+        unique_ids (list): Columns used to identify matching rows.
 
     Returns:
         pd.DataFrame: The modified edit_df with updated values where matches were found.
     """
     for _, row_udf in upload_df.iterrows():
-    # Check if the current row_udf matches the edit_df
-        matching_row = edit_df[(edit_df['PatientID'] == row_udf['PatientID'])]
-    
-        # Update only if row_udf matches
+        mask = edit_df[unique_ids].eq(row_udf[unique_ids]).all(axis=1)
+        matching_row = edit_df[mask]
+
         if not matching_row.empty:
-            idx = matching_row.index[0]  # Get the index of the matching row_udf
-            
-            for tag, _ in update_tags.items(): 
-                col = f'Update_{tag}'   
+            idx = matching_row.index[0]
+
+            for tag, _ in update_tags.items():
+                col = f'Update_{tag}'
                 edit_df.at[idx, col] = row_udf[col]
         
     return edit_df
@@ -104,11 +104,11 @@ def validate_upload(edit_df: pd.DataFrame, upload_df: pd.DataFrame, update_tags:
         return f':warning: Error in uploaded file: There are empty values in the following columns: :blue[{", ".join(empty_col)}]'
     
     # Error checking of columns in user uploaded file
-    if f'Update_{upload_df_id}' not in upload_df:
-        return f':warning: Error in uploaded file: **Column "Update_{upload_df_id}"** must be contained.'
-    
     if f'{upload_df_id}' not in upload_df:
         return f':warning: Error in uploaded file: **Column "{upload_df_id}"** must be contained.'
+
+    if upload_df_id in update_tags and f'Update_{upload_df_id}' not in upload_df:
+        return f':warning: Error in uploaded file: **Column "Update_{upload_df_id}"** must be contained.'
     
     # Error checking of unmatched PatientIDs
     unmatched_ids = check_unmatched_rows(upload_df, edit_df, upload_df_id)

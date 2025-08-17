@@ -1,6 +1,6 @@
 
 [global]
-developmentMode = false
+developmentMode = true
 
 [server]
 port = 8502
@@ -8,3 +8,6 @@ port = 8502
 [client]
 showErrorDetails = true
 
+[server]
+enableXsrfProtection = false
+enableCORS = false
