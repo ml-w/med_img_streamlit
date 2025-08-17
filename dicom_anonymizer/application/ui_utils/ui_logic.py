@@ -13,9 +13,9 @@ def create_update_cols(udf: pd.DataFrame, update_tags: dict) -> pd.DataFrame:
     """
     for tag, rule in update_tags.items():
         if callable(rule): 
-            udf[f'Update_{tag}'] = udf[tag].apply(rule)
+            udf.loc[:, f'Update_{tag}'] = udf[tag].apply(rule)
         else: 
-            udf[f'Update_{tag}'] = rule
+            udf.loc[:, f'Update_{tag}'] = rule
     return udf
             
 

@@ -1,6 +1,6 @@
 
 [global]
-developmentMode = false
+developmentMode = true
 
 [server]
 port = 8502

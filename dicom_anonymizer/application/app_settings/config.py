@@ -13,8 +13,8 @@ ref_tags = [
     'PatientSex',
     'PatientAge',
     'StudyDate',
-    'SeriesInstanceUID',
-    'SOPInstanceUID',
+    'StudyTime',
+    'BodyPartExamined'
 ]
 
 # DICOM tags: to be Anonymized default values or user's inputs (dict)
@@ -38,7 +38,7 @@ series_unique_ids = [
 ]
 
 # DICOM tags: to be Shown in template for user's reference at series level (list)
-series_ref_tags = ref_tags + ['AccessionNumber', 'PatientName', 'SeriesDescription']
+series_ref_tags = ref_tags + ['SeriesInstanceUID']
 
 # DICOM tags: to be Anonymized default values or user's inputs at series level (dict)
 series_update_tags = update_tags | {

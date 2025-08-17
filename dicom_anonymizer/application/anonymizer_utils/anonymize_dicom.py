@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 from pydicom.tag import Tag
 import pandas as pd
+from streamlit import logger
 
 def create_output_dir(file_dir: str, folder_dir: Path) -> str:
     """
@@ -55,6 +56,7 @@ def create_dcm_df(
     dcm_info.update({dcm_tag: [] for dcm_tag in all_tags})
 
     if series_mode:
+        logger.get_logger('anonymizer').info("Executing in eries mode")
         for file_dir in folder_dir.rglob(f"*.{fformat}"):
             series_dir = file_dir.parent
 
@@ -62,6 +64,7 @@ def create_dcm_df(
                 f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
             except Exception as e:
                 print(f"{e = }")
+                logger.exception(e)
                 continue
 
             dcm_info['folder_dir'].append(str(series_dir))
@@ -74,6 +77,7 @@ def create_dcm_df(
                 else:
                     dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
 
+        logger.get_logger('anonymizer').info(f"Length of each item in dcm_info: {', '.join([f'{key}: {len(value)}' for key, value in dcm_info.items()])}")
         df = pd.DataFrame(dcm_info)
         df.drop_duplicates(subset=unique_ids, inplace=True)
     else:
@@ -124,7 +128,9 @@ def consolidate_tags(row: pd.Series, update_tags: dict) -> dict:
         'PatientSex':               Tag((0x0010, 0x0040)),
         'AccessionNumber':          Tag((0x0008, 0x0050)),
         'InstitutionName':          Tag((0x0008, 0x0080)),
-        'StudyDate':                Tag((0x0008, 0x0020))
+        'StudyDate':                Tag((0x0008, 0x0020)),
+        'StudyTime':                Tag((0x0008, 0x0031)),
+        'BodyPartExamined':         Tag((0x0018, 0x0015))
     }
     
     update = {}

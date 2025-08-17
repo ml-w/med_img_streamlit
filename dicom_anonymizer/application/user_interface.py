@@ -139,8 +139,9 @@ def streamlit_app():
                 if not st.session_state['series_mode']:
                     uids_df = uids_df.drop_duplicates()
                 st.session_state['uids'] = uids_df
-            except Exception:
+            except Exception as e:
                 st.error(':warning: We cannot find any files in the file extension in the directory.')
+                st.logger.get_logger('ui').exception(e)
 
     # When fetch file function is not triggered, display nothing
     if st.session_state['dcm_info'] is None:
