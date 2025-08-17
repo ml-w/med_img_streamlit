@@ -22,6 +22,8 @@ A Streamlit application for anonymizing DICOM files with an interactive user int
    `streamlit run user_interface.py`
    Open the link provided in your terminal to access the application.
 
+3. Modify `application/app_settings/config.py` to change the default behavior of anonymization.
+
 ## Features
 - User-Friendly Interface: Provides an intuitive web interface built with Streamlit for easy interaction and input management.
 - Folder and File Format Input: Allows users to specify the directory containing DICOM files and the desired file format for processing.

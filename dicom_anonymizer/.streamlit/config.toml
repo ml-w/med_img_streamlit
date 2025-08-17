@@ -6,5 +6,5 @@ developmentMode = false
 port = 8502
 
 [client]
-showErrorDetails = True
+showErrorDetails = true
 
