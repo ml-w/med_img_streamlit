@@ -21,6 +21,7 @@ ref_tags = [
 update_tags = {
     'PatientName':      '',                                     # for user's inputs
     'PatientID':        '',                                     # for user's inputs
+    'BodyPartExamined': ''
     # 'InstitutionName':  '',                                     # for user's inputs
     # 'PatientBirthDate': '19700101',                             # reset patient's birth date to 0
     # 'AccessionNumber':  lambda x: re.sub(r'^[a-zA-Z]+', '', x)  # remove the first 3 characters
