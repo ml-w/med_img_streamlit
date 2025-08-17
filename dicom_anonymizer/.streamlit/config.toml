@@ -3,11 +3,10 @@
 developmentMode = true
 
 [server]
+enableXsrfProtection = false
+enableCORS = false
 port = 8502
 
 [client]
 showErrorDetails = true
 
-[server]
-enableXsrfProtection = false
-enableCORS = false

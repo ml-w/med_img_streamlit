@@ -57,8 +57,7 @@ def check_unmatched_rows(upload_df: pd.DataFrame, edit_df: pd.DataFrame, upload_
     Returns:
         list: A list of unmatched PatientIDs.
     """
-    unmatched_patient_ids = edit_df[~edit_df[f'{upload_df_id}'].isin(upload_df[f'{upload_df_id}']) & 
-                                      ~edit_df[f'{upload_df_id}'].isin(upload_df[f'Update_{upload_df_id}'])]
+    unmatched_patient_ids = edit_df[~edit_df[f'{upload_df_id}'].isin(upload_df[f'{upload_df_id}'])]
     return unmatched_patient_ids[f'{upload_df_id}'].unique().tolist()
 
 def check_empty_cols(edit_df: pd.DataFrame, update_tags: dict) -> list:

@@ -20,7 +20,6 @@ ref_tags = [
 # DICOM tags: to be Anonymized default values or user's inputs (dict)
 update_tags = {
     'PatientName':      '',                                     # for user's inputs
-    'PatientID':        '',                                     # for user's inputs
     'BodyPartExamined': ''
     # 'InstitutionName':  '',                                     # for user's inputs
     # 'PatientBirthDate': '19700101',                             # reset patient's birth date to 0
@@ -42,9 +41,7 @@ series_unique_ids = [
 series_ref_tags = ref_tags + ['SeriesInstanceUID']
 
 # DICOM tags: to be Anonymized default values or user's inputs at series level (dict)
-series_update_tags = update_tags | {
-    'SeriesDescription': ''
-}
+series_update_tags = update_tags
 
 # DICOM tags: to be Anonymized as empty string (None-default or list)
 # >> Example: tags_2_anon = [(0x0010, 0x0010), (0x0010, 0x0020)]

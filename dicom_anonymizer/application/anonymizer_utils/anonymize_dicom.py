@@ -135,6 +135,7 @@ def consolidate_tags(row: pd.Series, update_tags: dict) -> dict:
     
     update = {}
     for dcm_tag in update_tags:
+        logger.get_logger("anonymizer").info(f"Set {dcm_tag} for updating")
         update[tag_dict[dcm_tag]] = row[f'Update_{dcm_tag}']
     
     return update
