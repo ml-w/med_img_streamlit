@@ -157,7 +157,7 @@ def save_state(file_path, state):
 
 
 # File path to save/load the session state
-state_file = ".session_state.json"
+state_file = ".session.json"
 
 if 'initialized' not in st.session_state:
     loaded_state = load_state(state_file)
@@ -181,23 +181,23 @@ with st.expander("Directory Setup", expanded=st.session_state.get("require_setup
     st.session_state.id_globber = st.text_input("Regex ID globber:", value=st.session_state.get('id_globber', r"\w{0,5}\d+"))
     st.session_state.frame_path = Path(st.text_input("Frame Path:", value=str(st.session_state.get('frame_path', "./Checked_Images.csv"))))
     
-    col1, col2, _ = st.columns([1, 1,3])
+    col1, _ = st.columns([1, 3])
     with col1:
-        if st.button("Save States", use_container_width=True):
-            # Save the current state
-            save_state(state_file, {
-                'mri_dir': str(st.session_state.mri_dir),
-                'seg_dir': str(st.session_state.seg_dir),
-                'id_globber': st.session_state.id_globber, 
-                'frame_path': str(st.session_state.frame_path)
-            })
-            st.rerun()
-    
-    with col2:
         if st.button("Reload Dataframe", use_container_width=True, key="btn_reload_dataframe"):
             # Reload the dataframe from specified framepath
             load_dataframe(st.session_state.frame_path)
             st.rerun()
+
+# Persist the current session inputs automatically
+save_state(
+    state_file,
+    {
+        'mri_dir': str(st.session_state.get('mri_dir', '')),
+        'seg_dir': str(st.session_state.get('seg_dir', '')),
+        'id_globber': st.session_state.get('id_globber', ''),
+        'frame_path': str(st.session_state.get('frame_path', '')),
+    },
+)
 
 # * Setup paths
 # Target ID list
