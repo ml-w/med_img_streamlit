@@ -41,11 +41,18 @@ def create_dcm_df(
         pd.DataFrame: A dataframe which contains information of the dicom tags. 
     """
     folder_dir = Path(folder)
+
+    # Combine all requested tags once to avoid duplicate entries when a tag
+    # appears in multiple configuration lists (e.g., ``SeriesInstanceUID`` in
+    # both ``unique_ids`` and ``ref_tags``). Using ``dict.fromkeys`` preserves
+    # the original order while de-duplicating.
+    all_tags = list(dict.fromkeys(unique_ids + ref_tags + new_tags))
+
     dcm_info = {
         'folder_dir': [],
         'output_dir': []
     }
-    dcm_info.update({dcm_tag: [] for dcm_tag in (unique_ids + ref_tags + new_tags)})
+    dcm_info.update({dcm_tag: [] for dcm_tag in all_tags})
 
     if series_mode:
         for file_dir in folder_dir.rglob(f"*.{fformat}"):
@@ -61,7 +68,7 @@ def create_dcm_df(
             dcm_info['output_dir'].append(create_output_dir(series_dir, folder_dir))
 
             # Gather information from DICOM tags
-            for dcm_tag in (unique_ids + ref_tags + new_tags):
+            for dcm_tag in all_tags:
                 if dcm_tag == 'PatientName':
                     dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
                 else:
@@ -83,7 +90,7 @@ def create_dcm_df(
                     dcm_info['output_dir'].append(create_output_dir(sub_folder, folder_dir))
 
                     # Gather information from DICOM tags
-                    for dcm_tag in (unique_ids + ref_tags + new_tags):
+                    for dcm_tag in all_tags:
                         if dcm_tag == 'PatientName':
                             dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
                         else:
