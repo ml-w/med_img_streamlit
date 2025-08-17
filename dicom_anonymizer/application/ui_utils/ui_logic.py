@@ -61,47 +61,23 @@ def check_unmatched_rows(upload_df: pd.DataFrame, edit_df: pd.DataFrame, upload_
                                       ~edit_df[f'{upload_df_id}'].isin(upload_df[f'Update_{upload_df_id}'])]
     return unmatched_patient_ids[f'{upload_df_id}'].unique().tolist()
 
-def check_empty_cols(edit_df: pd.DataFrame, update_tags: dict) -> list:
-    """
-    Check for empty update columns in edit_df. 
-    
-    Args:
-        edit_df (pd.DataFrame): The DataFrame from session state with user's edits. 
-        update_tags (dict): The dictionary of DICOM tags to be updated. 
-    
-    Returns:
-        list: A list of string, representing the name of empty columns. 
-
-    """
-    empty_col = []
-    for tag, _ in update_tags.items():
-        if edit_df[f'Update_{tag}'].isnull().any() or (edit_df[f'Update_{tag}'] == '').any(): 
-            empty_col.append(f'Update_{tag}')
-    return empty_col
-
 def validate_upload(edit_df: pd.DataFrame, upload_df: pd.DataFrame, update_tags: dict, upload_df_id: str):
     """
     Validate the user-uploaded DataFrame against the specified update rules.
 
     This function checks for the following conditions:
-    1. Empty values in specified columns of the edit DataFrame.
-    2. The presence of required columns in the uploaded DataFrame.
-    3. Unmatched Patient IDs between the uploaded DataFrame and the edit DataFrame.
+    1. The presence of required columns in the uploaded DataFrame.
+    2. Unmatched Patient IDs between the uploaded DataFrame and the edit DataFrame.
 
     Args:
         edit_df (pd.DataFrame): The DataFrame containing the original data that needs to be updated.
         upload_df (pd.DataFrame): The user-uploaded DataFrame that contains the updates.
-        update_tags (list): A list of tags corresponding to the columns that need to be validated.
+        update_tags (dict): Dictionary of tags corresponding to the columns that need to be validated.
         upload_df_id (str): The identifier for the specific column being validated in the uploaded DataFrame.
 
     Returns:
         str or None: Returns an error message if any validation checks fail; otherwise, returns None.
     """
-    
-    # Error checking of empty columns in "Update"
-    empty_col = check_empty_cols(upload_df, update_tags)
-    if len(empty_col) > 0:
-        return f':warning: Error in uploaded file: There are empty values in the following columns: :blue[{", ".join(empty_col)}]'
     
     # Error checking of columns in user uploaded file
     if f'{upload_df_id}' not in upload_df:
@@ -115,5 +91,28 @@ def validate_upload(edit_df: pd.DataFrame, upload_df: pd.DataFrame, update_tags:
     if unmatched_ids:
         unmatched_ids_str = ', '.join(map(str, unmatched_ids))
         return f':warning: Error in uploaded file: The following **{upload_df_id}** have no matches in the uploaded file - :blue[{unmatched_ids_str}].'
-    
+
     return None  # No errors found
+
+
+def highlight_updated_cells(df: pd.DataFrame, update_tags: dict):
+    """Return a Styler that highlights updated cells.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing original and updated columns.
+        update_tags (dict): Dictionary of selected tags to update.
+
+    Returns:
+        pandas.io.formats.style.Styler: Styled DataFrame with updates highlighted.
+    """
+    def _highlight(data: pd.DataFrame) -> pd.DataFrame:
+        colors = pd.DataFrame('', index=data.index, columns=data.columns)
+        for tag in update_tags:
+            orig_col = tag
+            upd_col = f'Update_{tag}'
+            if orig_col in data.columns and upd_col in data.columns:
+                diff = (data[orig_col].astype(str) != data[upd_col].astype(str)) & (data[upd_col].astype(str) != '')
+                colors.loc[diff, upd_col] = 'background-color: yellow'
+        return colors
+
+    return df.style.apply(_highlight, axis=None)

@@ -7,8 +7,8 @@ unique_ids = [
     'AccessionNumber'
 ]
 
-# DICOM tags: to be Shown in template for user's reference (list)
-ref_tags = [
+# DICOM tags: available to be shown in template for user's reference (list)
+ref_tag_options = [
     'PatientBirthDate',
     'PatientSex',
     'PatientAge',
@@ -17,8 +17,8 @@ ref_tags = [
     'BodyPartExamined'
 ]
 
-# DICOM tags: to be Anonymized default values or user's inputs (dict)
-update_tags = {
+# DICOM tags: available to be anonymized with default values or user's inputs (dict)
+update_tag_defaults = {
     'PatientName':      '',                                     # for user's inputs
     'PatientID':        '',                                     # for user's inputs
     'BodyPartExamined': ''
@@ -38,11 +38,11 @@ series_unique_ids = [
     'SeriesInstanceUID'
 ]
 
-# DICOM tags: to be Shown in template for user's reference at series level (list)
-series_ref_tags = ref_tags + ['SeriesInstanceUID']
+# DICOM tags: available to be shown in template for user's reference at series level (list)
+series_ref_tag_options = ref_tag_options + ['SeriesInstanceUID']
 
-# DICOM tags: to be Anonymized default values or user's inputs at series level (dict)
-series_update_tags = update_tags | {
+# DICOM tags: available to be anonymized default values or user's inputs at series level (dict)
+series_update_tag_defaults = update_tag_defaults | {
     'SeriesDescription': ''
 }
 

@@ -135,8 +135,10 @@ def consolidate_tags(row: pd.Series, update_tags: dict) -> dict:
     
     update = {}
     for dcm_tag in update_tags:
-        update[tag_dict[dcm_tag]] = row[f'Update_{dcm_tag}']
-    
+        value = row.get(f'Update_{dcm_tag}')
+        if pd.notna(value) and value != '':
+            update[tag_dict[dcm_tag]] = value
+
     return update
 
 def remove_info(dataset: Dataset,

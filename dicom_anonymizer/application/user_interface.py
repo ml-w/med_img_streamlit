@@ -1,21 +1,22 @@
 import streamlit as st
 import json
 import pandas as pd
+from pathlib import Path
 
 from anonymizer_utils.anonymize_dicom import *
 from ui_utils.ui_logic import *
 from app_settings.config import (
     unique_ids,
-    ref_tags,
-    update_tags,
+    ref_tag_options,
+    update_tag_defaults,
     upload_df_id,
     series_upload_df_id,
     tags_2_anon,
     tags_2_spare,
     new_tags,
     series_unique_ids,
-    series_ref_tags,
-    series_update_tags,
+    series_ref_tag_options,
+    series_update_tag_defaults,
 )
 
 def streamlit_app(): 
@@ -40,6 +41,10 @@ def streamlit_app():
         st.session_state['series_mode'] = False
     if 'matcher_id' not in st.session_state:        # identifier column in templates
         st.session_state['matcher_id'] = upload_df_id
+    if 'selected_display_tags' not in st.session_state:
+        st.session_state['selected_display_tags'] = []
+    if 'selected_update_tags' not in st.session_state:
+        st.session_state['selected_update_tags'] = []
 
     # Page user interface
     st.set_page_config(page_title = 'DICOM Anonymizer')
@@ -60,6 +65,8 @@ def streamlit_app():
     series_mode_box = st.checkbox("Anonymize per series", value=st.session_state['series_mode'])
     if series_mode_box != st.session_state['series_mode']:
         st.session_state['dcm_info'] = None
+        st.session_state['selected_display_tags'] = []
+        st.session_state['selected_update_tags'] = []
     st.session_state['series_mode'] = series_mode_box
 
     if st.session_state['series_mode']:
@@ -68,8 +75,8 @@ def streamlit_app():
         st.session_state['matcher_id'] = upload_df_id
 
     active_unique_ids = series_unique_ids if st.session_state['series_mode'] else unique_ids
-    active_ref_tags = series_ref_tags if st.session_state['series_mode'] else ref_tags
-    active_update_tags = series_update_tags if st.session_state['series_mode'] else update_tags
+    ref_options = series_ref_tag_options if st.session_state['series_mode'] else ref_tag_options
+    update_options = series_update_tag_defaults if st.session_state['series_mode'] else update_tag_defaults
     active_upload_df_id = st.session_state['matcher_id']
 
     # A container of user instruction
@@ -82,7 +89,7 @@ def streamlit_app():
 
             ### Modification of DICOM Tag values
             - :red[Update Input Template]: Update your inputs using the automatically generated template. If you prefer to use your own template, please ensure that you include the column "{active_upload_df_id}" as an identifier for the cases.
-            - :red[Avoid Empty Fields]: When uploading the updated template, ensure that there are NO empty inputs in the columns that start with "Update" (e.g. `Update_PatientName`). The values under these columns will be directly applied to the anonymized files.
+            - :red[Optional Updates]: The template contains columns starting with "Update" (e.g. `Update_PatientName`). Leave a field blank if you do not wish to modify that value.
             - :red[Default values]: You can modify the following DICOM tags. For your convenience, default values have been pre-set for certain tags to streamline the anonymization process.
 
             | DICOM Tag           | Default value     |
@@ -126,19 +133,15 @@ def streamlit_app():
     else: 
         with st.spinner(text='Fetching files...'):
             try:
+                all_ref_tags = list(dict.fromkeys(ref_options + list(update_options.keys())))
                 st.session_state['dcm_info'] = create_dcm_df(
                     folder=st.session_state['folder'],
                     fformat=st.session_state['fformat'],
                     unique_ids=active_unique_ids,
-                    ref_tags=active_ref_tags,
+                    ref_tags=all_ref_tags,
                     new_tags=list(new_tags.keys()),
                     series_mode=st.session_state['series_mode']
                 )
-                display_cols = list(dict.fromkeys(active_unique_ids + active_ref_tags))
-                uids_df = st.session_state['dcm_info'][display_cols]
-                if not st.session_state['series_mode']:
-                    uids_df = uids_df.drop_duplicates()
-                st.session_state['uids'] = uids_df
             except Exception as e:
                 st.error(':warning: We cannot find any files in the file extension in the directory.')
                 st.logger.get_logger('ui').exception(e)
@@ -161,7 +164,32 @@ def streamlit_app():
             )
         active_upload_df_id = st.session_state['matcher_id']
 
-        edit_df = create_update_cols(st.session_state['uids'], active_update_tags)
+        if not st.session_state['selected_display_tags']:
+            st.session_state['selected_display_tags'] = ref_options
+        if not st.session_state['selected_update_tags']:
+            st.session_state['selected_update_tags'] = list(update_options.keys())
+
+        st.session_state['selected_display_tags'] = st.multiselect(
+            'Select columns to display',
+            ref_options,
+            default=st.session_state['selected_display_tags']
+        )
+        st.session_state['selected_update_tags'] = st.multiselect(
+            'Select columns to update',
+            list(update_options.keys()),
+            default=st.session_state['selected_update_tags']
+        )
+
+        active_ref_tags = st.session_state['selected_display_tags']
+        active_update_tags = {k: update_options[k] for k in st.session_state['selected_update_tags']}
+
+        display_cols = list(dict.fromkeys(active_unique_ids + active_ref_tags + list(active_update_tags.keys())))
+        uids_df = st.session_state['dcm_info'][display_cols]
+        if not st.session_state['series_mode']:
+            uids_df = uids_df.drop_duplicates()
+        st.session_state['uids'] = uids_df
+
+        edit_df = create_update_cols(st.session_state['uids'].copy(), active_update_tags)
         st.session_state['edit_df'] = edit_df
 
         case_desc = 'unique series' if st.session_state['series_mode'] else 'unique cases'
@@ -235,9 +263,10 @@ def streamlit_app():
         # Save latest version of edit_df to session state
         st.session_state['edit_df'] = edit_df
         
+        styled_df = highlight_updated_cells(st.session_state['edit_df'], active_update_tags)
         display_data.dataframe(
-            st.session_state['edit_df'], 
-            use_container_width=True, 
+            styled_df,
+            use_container_width=True,
             hide_index=True
         )
 
@@ -264,7 +293,7 @@ def streamlit_app():
                 tags_2_create[dcm_tag] = create_new_tag.selectbox(f'Please select a value for DICOM Tag: `{dcm_tag}`.', options)
         
         # Capture user's input to write anonymized files 
-        if st.button("Anonymize files", type='primary'): 
+        if st.button("Run", type='primary'):
             if upload_file is None: 
                 st.warning(':warning: Please upload a file as your inputs before file anonymization.')
             else:
