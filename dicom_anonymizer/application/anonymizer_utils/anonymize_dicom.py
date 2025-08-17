@@ -50,21 +50,22 @@ def create_dcm_df(
     if series_mode:
         for file_dir in folder_dir.rglob(f"*.{fformat}"):
             series_dir = file_dir.parent
-            dcm_info['folder_dir'].append(str(series_dir))
-            dcm_info['output_dir'].append(create_output_dir(series_dir, folder_dir))
 
             try:
                 f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
-
-                # Gather information from DICOM tags
-                for dcm_tag in (unique_ids + ref_tags + new_tags):
-                    if dcm_tag == 'PatientName':
-                        dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
-                    else:
-                        dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
-
             except Exception as e:
                 print(f"{e = }")
+                continue
+
+            dcm_info['folder_dir'].append(str(series_dir))
+            dcm_info['output_dir'].append(create_output_dir(series_dir, folder_dir))
+
+            # Gather information from DICOM tags
+            for dcm_tag in (unique_ids + ref_tags + new_tags):
+                if dcm_tag == 'PatientName':
+                    dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
+                else:
+                    dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
 
         df = pd.DataFrame(dcm_info)
         df.drop_duplicates(subset=unique_ids, inplace=True)
@@ -72,23 +73,23 @@ def create_dcm_df(
         for sub_folder in folder_dir.iterdir():
             if sub_folder.is_dir():
                 for file_dir in sub_folder.rglob(f"*.{fformat}"):
+                    try:
+                        f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
+                    except Exception as e:
+                        print(f"{e = }")
+                        continue
+
                     dcm_info['folder_dir'].append(str(sub_folder))
                     dcm_info['output_dir'].append(create_output_dir(sub_folder, folder_dir))
 
-                    try:
-                        f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
+                    # Gather information from DICOM tags
+                    for dcm_tag in (unique_ids + ref_tags + new_tags):
+                        if dcm_tag == 'PatientName':
+                            dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
+                        else:
+                            dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
 
-                        # Gather information from DICOM tags
-                        for dcm_tag in (unique_ids + ref_tags + new_tags):
-                            if dcm_tag == 'PatientName':
-                                dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
-                            else:
-                                dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
-
-                    except Exception as e:
-                        print(f"{e = }")
-
-                    break   # only the read the 1st file of the subholder
+                    break   # only read the 1st valid file of the subfolder
 
         df = pd.DataFrame(dcm_info)
 
