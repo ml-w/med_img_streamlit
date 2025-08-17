@@ -134,7 +134,8 @@ def streamlit_app():
                     new_tags=list(new_tags.keys()),
                     series_mode=st.session_state['series_mode']
                 )
-                uids_df = st.session_state['dcm_info'][active_unique_ids + active_ref_tags]
+                display_cols = list(dict.fromkeys(active_unique_ids + active_ref_tags))
+                uids_df = st.session_state['dcm_info'][display_cols]
                 if not st.session_state['series_mode']:
                     uids_df = uids_df.drop_duplicates()
                 st.session_state['uids'] = uids_df
