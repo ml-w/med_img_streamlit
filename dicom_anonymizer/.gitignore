@@ -1,4 +1,8 @@
+# Datafiles
 *csv
+
+# Byte-compiled / optimized / DLL files
 __pycache__/
+
 notes*.md
 /temp

@@ -1,32 +1,12 @@
-import pdb
 import streamlit as st
 import json
 import pandas as pd
-from rich.logging import RichHandler
-import logging
 
 from anonymizer_utils.anonymize_dicom import *
 from ui_utils.ui_logic import *
 from app_settings.config import unique_ids, ref_tags, update_tags, upload_df_id, tags_2_anon, tags_2_spare, new_tags
 
-anon_logger = logging.getLogger("anonimizer")
-anon_logger.setLevel(logging.DEBUG)  # Set the logger level to DEBUG
-
-# Create a stream handler with RichHandler for better formatting
-if len(anon_logger.handlers) == 0:
-    stream_handler = RichHandler(markup=True, rich_tracebacks=True, tracebacks_show_locals=True, 
-                                 locals_max_length=5, locals_max_string=40)
-    stream_handler.setLevel(logging.DEBUG)  # Set the level for the stream handler
-
-    # Create a formatter (optional, if you want to customize)
-    formatter = logging.Formatter("%(message)s")
-    stream_handler.setFormatter(formatter)
-
-    # Add the stream handler to the logger
-    anon_logger.addHandler(stream_handler)
-
 def streamlit_app(): 
-    anon_logger.info("Start application")
     # Initialize session states
     if 'user_folder' not in st.session_state:       # user input directory
         st.session_state['user_folder'] = ''
@@ -75,12 +55,6 @@ def streamlit_app():
             ### Folder Output
             - The anonymized files will be saved in a new folder named `"[your file path]-Anonymized"`. For example, if you file path is `"C:/Documents/dicom"`, the destination will be `"C:/Documents/dicom-Anonymized"`.
 
-            ### FQA
-            
-            #### I am encountering 403 error when uploading the csv!
-            
-            If you encounter this error, make sure you've started the app with option `--server.enableXsrfProtection false`. 
-
             '''
         )
     
@@ -91,14 +65,12 @@ def streamlit_app():
     )
 
     user_fformat = st.text_input(
-        'File format', 
-        placeholder='e.g., "dcm"; Enter a single * character to ignore format.'
+        'File extension', 
+        placeholder='e.g., "dcm"'
     )
-    anon_logger.debug("Finish initilization. Waiting for input...")
 
     # When 'fetch' button is triggered, save user's inputs and reset last dcm_info in st.session_states
     if st.button('Fetch files', type='primary'): 
-        anon_logger.info("Receives input. Executing fetch...")
         if not user_folder == st.session_state['user_folder']: 
             st.session_state['user_folder'] = user_folder
             st.session_state['folder'] = user_folder.replace('\\', '/')
@@ -130,9 +102,8 @@ def streamlit_app():
                     new_tags=list(new_tags.keys())
                 )
                 st.session_state['uids'] = st.session_state['dcm_info'][(unique_ids + ref_tags)].drop_duplicates()
-            except Exception as e: 
+            except: 
                 st.error(':warning: We cannot find any files in the file extension in the directory.')
-                anon_logger.exception(e)
 
     # When fetch file function is not triggered, display nothing
     if st.session_state['dcm_info'] is None: 
@@ -177,7 +148,6 @@ def streamlit_app():
         
         # Read user uploaded file
         if upload_file is not None: 
-            anon_logger.info("Reading uploaded file...")
             file_extension = Path(upload_file.name).suffix
             readfile_error = False
 
@@ -247,12 +217,11 @@ def streamlit_app():
             else:
                 anon_dcm_df = st.session_state['dcm_info'].copy().filter(like='dir', axis=1)
                 anon_dcm_df = anon_dcm_df.join(st.session_state['edit_df'].filter(like='Update_', axis=1))
-                anon_logger.info("Start anonymization...")
+                
                 with st.spinner(text='Creating anonymized files...'): 
                     for _, row in anon_dcm_df.iterrows():
                         folder_dir = Path(row['folder_dir'])
-                        for file_dir in folder_dir.rglob(f"*.{user_fformat.lstrip('.')}" if not user_fformat == "*" else user_fformat):
-                            anon_logger.info(f"Anonymizing {str(file_dir)}")
+                        for file_dir in folder_dir.rglob(f"*.{st.session_state['fformat']}"):                        
                             output_dir = f"{row['output_dir']}/{Path(file_dir).name}"
                             update = consolidate_tags(row, update_tags)
 
