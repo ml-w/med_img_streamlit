@@ -56,15 +56,13 @@ def create_dcm_df(
     dcm_info.update({dcm_tag: [] for dcm_tag in all_tags})
 
     if series_mode:
-        logger.get_logger('anonymizer').info("Executing in eries mode")
-        for file_dir in folder_dir.rglob(f"*.{fformat}"):
+        logger.get_logger('anonymizer').info("Executing in series mode")
+        for file_dir in folder_dir.rglob(fformat):
             series_dir = file_dir.parent
 
             try:
                 f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
             except Exception as e:
-                print(f"{e = }")
-                logger.exception(e)
                 continue
 
             dcm_info['folder_dir'].append(str(series_dir))
@@ -83,11 +81,17 @@ def create_dcm_df(
     else:
         for sub_folder in folder_dir.iterdir():
             if sub_folder.is_dir():
-                for file_dir in sub_folder.rglob(f"*.{fformat}"):
+                for file_dir in sub_folder.rglob(fformat):
+                    if file_dir.is_dir():
+                        logger.get_logger('anonymizer').debug(f"Skipping director {file_dir}")
+                        continue
+                    
+                    logger.get_logger('anonymizer').debug(f"Parsing: {file_dir}")
                     try:
                         f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
                     except Exception as e:
-                        print(f"{e = }")
+                        logger.get_logger('anonymizer').warning(f"Cannot process file: {file_dir}. Skipping...")
+                        logger.get_logger('anonymizer').debug(f"Original error: {e = }")
                         continue
 
                     dcm_info['folder_dir'].append(str(sub_folder))
@@ -99,14 +103,20 @@ def create_dcm_df(
                             dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
                         else:
                             dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
-
+                            
+                    logger.get_logger('anonymizer').debug(f'Successfully processed file: {file_dir}')
                     break   # only read the 1st valid file of the subfolder
 
+    # Incase nothing is read
+    if len(dcm_info):
         df = pd.DataFrame(dcm_info)
-
-    df['PK'] = df[unique_ids].astype(str).agg('_'.join, axis=1)
-    df.set_index('PK', inplace=True)
-
+    else:
+        logger.get_logger('anonymizer').error("Something wrong, nothing is globbed")
+        df = None
+            
+    if not df is None:
+        df['PK'] = df[unique_ids].astype(str).agg('_'.join, axis=1)
+        df.set_index('PK', inplace=True)
     return df
 
 def consolidate_tags(row: pd.Series, update_tags: dict) -> dict: 

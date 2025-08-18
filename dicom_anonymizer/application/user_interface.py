@@ -54,7 +54,8 @@ def streamlit_app():
 
     user_fformat = st.text_input(
         'File extension',
-        placeholder='e.g., "dcm"'
+        placeholder='e.g., "*.dcm"', 
+        value='*.dcm'
     )
 
     series_mode_box = st.checkbox("Anonymize per series", value=st.session_state['series_mode'])
@@ -140,7 +141,7 @@ def streamlit_app():
                     uids_df = uids_df.drop_duplicates()
                 st.session_state['uids'] = uids_df
             except Exception as e:
-                st.error(':warning: We cannot find any files in the file extension in the directory.')
+                st.error(f':warning: We cannot find any files in the file extension in the directory.\nOriginal error: {e}')
                 st.logger.get_logger('ui').exception(e)
 
     # When fetch file function is not triggered, display nothing

@@ -4,10 +4,8 @@ developmentMode = true
 
 [server]
 port = 8502
+enableXsrfProtection = false
+enableCORS = false
 
 [client]
 showErrorDetails = true
-
-[server]
-enableXsrfProtection = false
-enableCORS = false
