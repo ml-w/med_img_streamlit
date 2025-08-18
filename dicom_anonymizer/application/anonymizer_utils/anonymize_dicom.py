@@ -7,6 +7,7 @@ from pydicom.tag import Tag
 import pandas as pd
 import streamlit
 from streamlit import logger
+import functools
 
 def create_output_dir(file_dir: str, folder_dir: Path) -> str:
     """
