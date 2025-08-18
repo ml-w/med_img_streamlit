@@ -42,16 +42,18 @@ series_unique_ids = [
 series_ref_tag_options = ref_tag_options + ['SeriesInstanceUID']
 
 # DICOM tags: available to be anonymized default values or user's inputs at series level (dict)
-series_update_tag_defaults = update_tag_defaults | {
-    'SeriesDescription': ''
-}
+series_update_tag_defaults = update_tag_defaults | {}
 
 # DICOM tags: to be Anonymized as empty string (None-default or list)
 # >> Example: tags_2_anon = [(0x0010, 0x0010), (0x0010, 0x0020)]
 tags_2_anon = None
 
 # DICOM tags: Not anonymized (list)
-tags_2_spare = []
+tags_2_spare = [
+    (0x0008, 0x1090),   # Model name
+    (0x0008, 0x1030),   # Study Description
+    (0x0008, 0x103e)    # Series description
+]
 
 # DICOM tags: to be Created (dict: 'TagName': (options))
 new_tags = {}
