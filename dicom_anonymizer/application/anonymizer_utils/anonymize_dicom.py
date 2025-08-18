@@ -41,9 +41,19 @@ def create_dcm_df(
         new_tags (list): The list of tags to be determine its existence. 
         progress_bar (streamlit.ProgressMixin): A progress bar to tell the progress.
     Returns:
-        pd.DataFrame: A dataframe which contains information of the dicom tags. 
+        pd.DataFrame: A dataframe which contains information of the dicom tags.
     """
     folder_dir = Path(folder)
+
+    if progress_bar is None:
+        class _NoOpProgress:
+            def progress(self, *args, **kwargs):
+                pass
+
+        progress_bar = _NoOpProgress()
+
+    if "*" not in fformat:
+        fformat = f"*.{fformat.lstrip('.')}"
 
     # Combine all requested tags once to avoid duplicate entries when a tag
     # appears in multiple configuration lists (e.g., ``SeriesInstanceUID`` in
@@ -110,7 +120,7 @@ def create_dcm_df(
                     continue
 
                 dcm_info['folder_dir'].append(str(file_dir.parent))
-                dcm_info['output_dir'].append(create_output_dir(folder_dir.name, folder_dir.parent))
+                dcm_info['output_dir'].append(create_output_dir(file_dir.parent, folder_dir))
 
                 # Gather information from DICOM tags
                 for dcm_tag in all_tags:
