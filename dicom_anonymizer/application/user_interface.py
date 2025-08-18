@@ -133,6 +133,7 @@ def streamlit_app():
     # Feed user inputted folder dir and file extension to fetch files
     else: 
         with st.spinner(text='Fetching files...'):
+            progress_bar = st.progress(0, text="Initiating read...")
             try:
                 all_ref_tags = list(dict.fromkeys(ref_options + list(update_options.keys())))
                 st.session_state['dcm_info'] = create_dcm_df(
@@ -141,7 +142,8 @@ def streamlit_app():
                     unique_ids=active_unique_ids,
                     ref_tags=all_ref_tags,
                     new_tags=list(new_tags.keys()),
-                    series_mode=st.session_state['series_mode']
+                    series_mode=st.session_state['series_mode'], 
+                    progress_bar=progress_bar
                 )
             except Exception as e:
                 st.error(f':warning: We cannot find any files in the file extension in the directory.\nOriginal error: {e}')
@@ -187,7 +189,7 @@ def streamlit_app():
         display_cols = list(dict.fromkeys(active_unique_ids + active_ref_tags + list(active_update_tags.keys())))
         uids_df = st.session_state['dcm_info'][display_cols]
         if not st.session_state['series_mode']:
-            uids_df = uids_df.drop_duplicates()
+            uids_df = uids_df.loc[~uids_df.index.duplicated()]
         st.session_state['uids'] = uids_df
 
         edit_df = create_update_cols(st.session_state['uids'].copy(), active_update_tags)

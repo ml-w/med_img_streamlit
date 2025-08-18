@@ -54,6 +54,4 @@ tags_2_anon = None
 tags_2_spare = []
 
 # DICOM tags: to be Created (dict: 'TagName': (options))
-new_tags = {
-    'BodyPartExamined': ('Head', 'Thorax', 'Chest'),
-}
+new_tags = {}

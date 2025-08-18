@@ -35,7 +35,7 @@ logger.setup_formatter = setup_formatter
 
 
 if __name__ == "__main__":
-    st_logger = logger.get_logger("streamlit")
+    st_logger = logger.get_logger("anonymizer")
     st_logger.info("Initiating DicomAnonymizer")
     logger.set_log_level('DEBUG')
     os.chdir(os.path.dirname(__file__))
