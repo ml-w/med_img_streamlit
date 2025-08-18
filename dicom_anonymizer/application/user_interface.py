@@ -3,6 +3,8 @@ import json
 import pandas as pd
 from pathlib import Path
 
+logger = st.logger.get_logger("ui")
+
 from anonymizer_utils.anonymize_dicom import *
 from ui_utils.ui_logic import *
 from app_settings.config import (
@@ -19,7 +21,42 @@ from app_settings.config import (
     series_update_tag_defaults,
 )
 
-def streamlit_app(): 
+# ---------------------------------------------------------------------------
+# Session persistence utilities
+# ---------------------------------------------------------------------------
+SESSION_FILE = Path.cwd() / ".session.json"
+SESSION_EXCLUDE = {"dcm_info", "uids", "edit_df"}
+
+
+def _load_session() -> None:
+    """Load saved session values from :data:`SESSION_FILE`."""
+    if SESSION_FILE.exists():
+        try:
+            with SESSION_FILE.open("r") as f:
+                data = json.load(f)
+            for k, v in data.items():
+                st.session_state.setdefault(k, v)
+        except Exception:
+            # Failing to load the session file should not break the app
+            pass
+
+
+def _save_session() -> None:
+    """Persist supported session values to :data:`SESSION_FILE`."""
+    data = {
+        k: v for k, v in st.session_state.items()
+        if k not in SESSION_EXCLUDE and not isinstance(v, pd.DataFrame)
+    }
+    try:
+        with SESSION_FILE.open("w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def streamlit_app():
+    _load_session()
+
     # Initialize session states
     if 'user_folder' not in st.session_state:       # user input directory
         st.session_state['user_folder'] = ''
@@ -147,7 +184,7 @@ def streamlit_app():
                 )
             except Exception as e:
                 st.error(f':warning: We cannot find any files in the file extension in the directory.\nOriginal error: {e}')
-                st.logger.get_logger('ui').exception(e)
+                logger.exception(e)
 
     # When fetch file function is not triggered, display nothing
     if st.session_state['dcm_info'] is None:
@@ -224,12 +261,15 @@ def streamlit_app():
         upload_file = upload_function.file_uploader(
             label=f'Choose a csv/excel file, which must contain column "{active_upload_df_id}" as identifer.',
             type=['csv', 'xsl', 'xslx'],
-            key = st.session_state['uploader_key']
-            )
-        
-        
+            key=st.session_state['uploader_key']
+        )
+        if upload_file is not None:
+            st.session_state['upload_file'] = upload_file
+        else:
+            upload_file = st.session_state.get('upload_file')
+
         # Read user uploaded file
-        if upload_file is not None: 
+        if upload_file is not None:
             file_extension = Path(upload_file.name).suffix
             readfile_error = False
 
@@ -293,31 +333,48 @@ def streamlit_app():
                 )
                 tags_2_create[dcm_tag] = create_new_tag.selectbox(f'Please select a value for DICOM Tag: `{dcm_tag}`.', options)
         
-        # Capture user's input to write anonymized files 
+        # Capture user's input to write anonymized files
         if st.button("Run", type='primary'):
-            if upload_file is None: 
-                st.warning(':warning: Please upload a file as your inputs before file anonymization.')
+            if st.session_state.get('dcm_info') is None or st.session_state.get('edit_df') is None:
+                st.warning(':warning: Please fetch files and provide updates before file anonymization.')
             else:
                 anon_dcm_df = st.session_state['dcm_info'].copy().filter(like='dir', axis=1)
                 anon_dcm_df = anon_dcm_df.join(st.session_state['edit_df'].filter(like='Update_', axis=1))
-                
-                with st.spinner(text='Creating anonymized files...'): 
+
+                with st.spinner(text='Creating anonymized files...'):
+                    # Prepare progress bar
+                    total_files = sum(
+                        len(list(Path(row['folder_dir']).rglob(f"*.{st.session_state['fformat']}")))
+                        for _, row in anon_dcm_df.iterrows()
+                    )
+                    processed = 0
+                    progress_bar = st.progress(0, text="Initiating anonymization...")
+
                     for _, row in anon_dcm_df.iterrows():
                         folder_dir = Path(row['folder_dir'])
-                        for file_dir in folder_dir.rglob(f"*.{st.session_state['fformat']}"):                        
+                        for file_dir in folder_dir.rglob(f"*.{st.session_state['fformat']}"):
                             output_dir = f"{row['output_dir']}/{Path(file_dir).name}"
                             update = consolidate_tags(row, active_update_tags)
 
+                            logger.debug(f"Anonymizing {file_dir} -> {output_dir}")
+
                             anonymize(
-                                file_dir=file_dir, 
-                                output_dir=output_dir, 
+                                file_dir=file_dir,
+                                output_dir=output_dir,
                                 tags=tags_2_anon,
                                 update=update,
-                                tags_2_spare=tags_2_spare, 
+                                tags_2_spare=tags_2_spare,
                                 tags_2_create=tags_2_create
                             )
-            
+
+                            processed += 1
+                            progress_bar.progress(processed / total_files, text=f"Anonymizing: {file_dir}")
+
+                    progress_bar.progress(1.0, text="Anonymization complete")
+
                 st.write(f'''
                         :star2: Anonymized files are written in:
                         :open_file_folder: :blue[{st.session_state['folder']}-Anonymized]
                         ''')
+
+    _save_session()
