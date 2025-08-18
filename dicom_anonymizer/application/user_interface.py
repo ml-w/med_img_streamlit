@@ -155,17 +155,15 @@ def streamlit_app():
 
     # When files are found, display unique ID df
     else:
-        if (not st.session_state['series_mode'] and
-                st.session_state['dcm_info'][upload_df_id].isnull().any()):
-            st.warning(':warning: Some DICOM files are missing AccessionNumber. Please select a matcher column.')
-            options = [col for col in [upload_df_id, 'PatientID', 'SeriesInstanceUID', 'SOPInstanceUID']
-                       if col in st.session_state['dcm_info'].columns]
-            st.session_state['matcher_id'] = st.selectbox(
-                'Select matcher column',
-                options,
-                index=options.index(st.session_state['matcher_id']) if st.session_state['matcher_id'] in options else 0,
-            )
+        options = [col for col in active_unique_ids if col in st.session_state['dcm_info'].columns]
+        st.session_state['matcher_id'] = st.selectbox(
+            'Select matcher column',
+            options,
+            index=options.index(st.session_state['matcher_id']) if st.session_state['matcher_id'] in options else 0,
+        )
         active_upload_df_id = st.session_state['matcher_id']
+        if st.session_state['dcm_info'][active_upload_df_id].isnull().any():
+            st.warning(':warning: Some DICOM files are missing the selected matcher column.')
 
         if not st.session_state['selected_display_tags']:
             st.session_state['selected_display_tags'] = ref_options
