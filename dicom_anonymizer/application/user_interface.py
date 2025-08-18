@@ -278,7 +278,7 @@ def streamlit_app():
                             output_dir = f"{row['output_dir']}/{Path(file_dir).name}"
                             update = consolidate_tags(row, active_update_tags)
 
-                            logger.debug(f"Anonymizing {file_dir} -> {output_dir}")
+                            logger.get_logger('streamlit').debug(f"Anonymizing {file_dir} -> {output_dir}")
 
                             anonymize(
                                 file_dir=file_dir,
