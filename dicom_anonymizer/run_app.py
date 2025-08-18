@@ -80,8 +80,6 @@ if __name__ == "__main__":
     streamlit.web.bootstrap.run(
         "./application/DicomAnonymizer.py",
         False,
-        False,
         [],
-        flag_options
         flag_options
     )
