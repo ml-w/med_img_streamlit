@@ -42,6 +42,8 @@ def _load_session():
 def _save_session():
     data = {k: v for k, v in st.session_state.items()
             if k not in SESSION_EXCLUDE and not isinstance(v, pd.DataFrame)}
+    if isinstance(data.get('folder'), str):
+        data['folder'] = data['folder'].replace('\\', '/')
     try:
         with SESSION_FILE.open("w") as f:
             json.dump(data, f)
@@ -79,6 +81,9 @@ def streamlit_app():
         placeholder='e.g., "*.dcm"',
         key='fformat'
     )
+
+    # Normalize folder path for processing without mutating widget state
+    folder = st.session_state.folder.replace('\\', '/')
 
     prev_series_mode = st.session_state.series_mode
     st.checkbox('Anonymize per series', key='series_mode')
@@ -128,7 +133,6 @@ def streamlit_app():
         if not st.session_state.folder or not st.session_state.fformat:
             st.error(':warning: Please input file directory and file extension.')
         else:
-            st.session_state.folder = st.session_state.folder.replace('\\', '/')
             st.session_state.dcm_info = None
             st.session_state.pop('upload_file', None)
             with st.spinner(text='Fetching files...'):
@@ -136,7 +140,7 @@ def streamlit_app():
                 try:
                     all_ref_tags = list(dict.fromkeys(ref_options + list(update_options.keys())))
                     st.session_state.dcm_info = create_dcm_df(
-                        folder=st.session_state.folder,
+                        folder=folder,
                         fformat=st.session_state.fformat,
                         unique_ids=active_unique_ids,
                         ref_tags=all_ref_tags,
@@ -292,7 +296,7 @@ def streamlit_app():
 
                 st.write(f"""
                         :star2: Anonymized files are written in:
-                        :open_file_folder: :blue[{st.session_state.folder}-Anonymized]
+                        :open_file_folder: :blue[{folder}-Anonymized]
                         """)
 
     _save_session()
