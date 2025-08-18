@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 from pydicom.tag import Tag
 import pandas as pd
+import streamlit
 from streamlit import logger
 
 def create_output_dir(file_dir: str, folder_dir: Path) -> str:
@@ -26,7 +27,8 @@ def create_dcm_df(
     unique_ids: list,
     ref_tags: list,
     new_tags: list,
-    series_mode: bool = False
+    series_mode: bool = False,
+    progress_bar: 'ProgressMixin' = None
 ) -> pd.DataFrame:
     """
     Gathers the meta data of each DICOM file from the folder. 
@@ -37,7 +39,7 @@ def create_dcm_df(
         unique_ids (list): The list of columns used as primary keys.
         ref_tags (list): The list of columns to be shown in template.
         new_tags (list): The list of tags to be determine its existence. 
-        
+        progress_bar (streamlit.ProgressMixin): A progress bar to tell the progress.
     Returns:
         pd.DataFrame: A dataframe which contains information of the dicom tags. 
     """
@@ -56,15 +58,13 @@ def create_dcm_df(
     dcm_info.update({dcm_tag: [] for dcm_tag in all_tags})
 
     if series_mode:
-        logger.get_logger('anonymizer').info("Executing in eries mode")
-        for file_dir in folder_dir.rglob(f"*.{fformat}"):
+        logger.get_logger('anonymizer').info("Executing in series mode")
+        for file_dir in folder_dir.rglob(fformat):
             series_dir = file_dir.parent
 
             try:
                 f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
             except Exception as e:
-                print(f"{e = }")
-                logger.exception(e)
                 continue
 
             dcm_info['folder_dir'].append(str(series_dir))
@@ -81,32 +81,65 @@ def create_dcm_df(
         df = pd.DataFrame(dcm_info)
         df.drop_duplicates(subset=unique_ids, inplace=True)
     else:
-        for sub_folder in folder_dir.iterdir():
-            if sub_folder.is_dir():
-                for file_dir in sub_folder.rglob(f"*.{fformat}"):
-                    try:
-                        f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
-                    except Exception as e:
-                        print(f"{e = }")
-                        continue
+        if folder_dir.is_dir():
+            processed = []
+            # Get the all the files that need processing
+            progress_bar.progress(0, text="Finding files to process...")
+            file_list = list(folder_dir.rglob(fformat))
+            p = 10.0
+            progress_bar.progress(p / 100, text=f"Found {len(file_list)} files.")
+            for file_dir in file_list:
+                # Update progress
+                p += 90 / len(file_list)
+                
+                if file_dir.is_dir():
+                    logger.get_logger('anonymizer').debug(f"Skipping director {file_dir}")
+                    continue
+                if file_dir.parent in processed:
+                    # Skip because we only look at first valid file per directory, this save us some time.
+                    continue
 
-                    dcm_info['folder_dir'].append(str(sub_folder))
-                    dcm_info['output_dir'].append(create_output_dir(sub_folder, folder_dir))
+                # Report progress
+                logger.get_logger('anonymizer').debug(f"Parsing: {file_dir}")
+                progress_bar.progress(p / 100, text=f"Parsing: {file_dir}")
+                try:
+                    f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
+                except Exception as e:
+                    logger.get_logger('anonymizer').warning(f"Cannot process file: {file_dir}. Skipping...")
+                    logger.get_logger('anonymizer').debug(f"Original error: {e = }")
+                    continue
 
-                    # Gather information from DICOM tags
-                    for dcm_tag in all_tags:
-                        if dcm_tag == 'PatientName':
-                            dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
-                        else:
-                            dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
+                dcm_info['folder_dir'].append(str(file_dir.parent))
+                dcm_info['output_dir'].append(create_output_dir(folder_dir.name, folder_dir.parent))
 
-                    break   # only read the 1st valid file of the subfolder
+                # Gather information from DICOM tags
+                for dcm_tag in all_tags:
+                    if dcm_tag == 'PatientName':
+                        dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
+                    else:
+                        dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
+                
+                logger.get_logger('anonymizer').debug(f'Successfully processed file: {file_dir}')
+                # Add the paraent dir to processed file
+                processed.append(file_dir.parent)
 
+    # Incase nothing is read
+    if len(dcm_info):
         df = pd.DataFrame(dcm_info)
-
-    df['PK'] = df[unique_ids].astype(str).agg('_'.join, axis=1)
-    df.set_index('PK', inplace=True)
-
+    else:
+        logger.get_logger('anonymizer').error("Something wrong, nothing is globbed")
+        df = None
+            
+    if not df is None:
+        df['PK'] = df[unique_ids].astype(str).agg('_'.join, axis=1)
+        df.set_index('PK', inplace=True)
+    else:
+        logger.get_logger('anonymizer').error("Something wrong, nothing is globbed")
+        df = None
+            
+    if not df is None:
+        df['PK'] = df[unique_ids].astype(str).agg('_'.join, axis=1)
+        df.set_index('PK', inplace=True)
     return df
 
 def consolidate_tags(row: pd.Series, update_tags: dict) -> dict: 
@@ -135,9 +168,10 @@ def consolidate_tags(row: pd.Series, update_tags: dict) -> dict:
     
     update = {}
     for dcm_tag in update_tags:
-        logger.get_logger("anonymizer").info(f"Set {dcm_tag} for updating")
-        update[tag_dict[dcm_tag]] = row[f'Update_{dcm_tag}']
-    
+        value = row.get(f'Update_{dcm_tag}')
+        if pd.notna(value) and value != '':
+            update[tag_dict[dcm_tag]] = value
+
     return update
 
 def remove_info(dataset: Dataset,
