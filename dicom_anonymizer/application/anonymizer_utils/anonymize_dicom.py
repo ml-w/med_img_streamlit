@@ -26,7 +26,8 @@ def create_dcm_df(
     unique_ids: list,
     ref_tags: list,
     new_tags: list,
-    series_mode: bool = False
+    series_mode: bool = False,
+    progress_bar: "ProgressMixin" = None,
 ) -> pd.DataFrame:
     """
     Gathers the meta data of each DICOM file from the folder. 
@@ -55,9 +56,13 @@ def create_dcm_df(
     }
     dcm_info.update({dcm_tag: [] for dcm_tag in all_tags})
 
+    pattern = fformat
+    if not any(ch in fformat for ch in ["*", "?"]):
+        pattern = f"*.{fformat.lstrip('.')}"
+
     if series_mode:
         logger.get_logger('anonymizer').info("Executing in eries mode")
-        for file_dir in folder_dir.rglob(f"*.{fformat}"):
+        for file_dir in folder_dir.rglob(pattern):
             series_dir = file_dir.parent
 
             try:
@@ -82,25 +87,26 @@ def create_dcm_df(
         df.drop_duplicates(subset=unique_ids, inplace=True)
     else:
         for sub_folder in folder_dir.iterdir():
-            if sub_folder.is_dir():
-                for file_dir in sub_folder.rglob(f"*.{fformat}"):
-                    try:
-                        f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
-                    except Exception as e:
-                        print(f"{e = }")
-                        continue
+            if not sub_folder.is_dir():
+                continue
+            for file_dir in sub_folder.rglob(pattern):
+                try:
+                    f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
+                except Exception as e:
+                    logger.exception(e)
+                    continue
 
-                    dcm_info['folder_dir'].append(str(sub_folder))
-                    dcm_info['output_dir'].append(create_output_dir(sub_folder, folder_dir))
+                dcm_info['folder_dir'].append(str(sub_folder))
+                dcm_info['output_dir'].append(create_output_dir(sub_folder, folder_dir))
 
-                    # Gather information from DICOM tags
-                    for dcm_tag in all_tags:
-                        if dcm_tag == 'PatientName':
-                            dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
-                        else:
-                            dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
+                # Gather information from DICOM tags
+                for dcm_tag in all_tags:
+                    if dcm_tag == 'PatientName':
+                        dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
+                    else:
+                        dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
 
-                    break   # only read the 1st valid file of the subfolder
+                break   # only read the 1st valid file of the subfolder
 
         df = pd.DataFrame(dcm_info)
 
@@ -109,7 +115,7 @@ def create_dcm_df(
 
     return df
 
-def consolidate_tags(row: pd.Series, update_tags: dict) -> dict: 
+def consolidate_tags(row: pd.Series, update_tags: dict) -> dict:
     """
     Consolidate a dictionary of DICOM tag series number based on their respective common name. 
     
@@ -135,8 +141,10 @@ def consolidate_tags(row: pd.Series, update_tags: dict) -> dict:
     
     update = {}
     for dcm_tag in update_tags:
-        update[tag_dict[dcm_tag]] = row[f'Update_{dcm_tag}']
-    
+        value = row.get(f'Update_{dcm_tag}')
+        if pd.notna(value) and value != '':
+            update[tag_dict[dcm_tag]] = value
+
     return update
 
 def remove_info(dataset: Dataset,
