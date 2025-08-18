@@ -60,8 +60,6 @@ def create_dcm_df(
     if series_mode:
         logger.get_logger('anonymizer').info("Executing in series mode")
         for file_dir in folder_dir.rglob(fformat):
-        logger.get_logger('anonymizer').info("Executing in series mode")
-        for file_dir in folder_dir.rglob(fformat):
             series_dir = file_dir.parent
 
             try:
@@ -125,8 +123,6 @@ def create_dcm_df(
                 # Add the paraent dir to processed file
                 processed.append(file_dir.parent)
 
-    # Incase nothing is read
-    if len(dcm_info):
     # Incase nothing is read
     if len(dcm_info):
         df = pd.DataFrame(dcm_info)
