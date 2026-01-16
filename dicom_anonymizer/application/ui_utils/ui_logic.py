@@ -104,6 +104,14 @@ def highlight_updated_cells(df: pd.DataFrame, update_tags: dict):
     Returns:
         pandas.io.formats.style.Styler: Styled DataFrame with updates highlighted.
     """
+    # Store original index to restore after styling
+    original_index_name = df.index.name
+    has_duplicate_index = not df.index.is_unique
+
+    # Reset index to ensure uniqueness for Styler compatibility
+    if has_duplicate_index:
+        df = df.reset_index()
+
     def _highlight(data: pd.DataFrame) -> pd.DataFrame:
         colors = pd.DataFrame('', index=data.index, columns=data.columns)
         for tag in update_tags:
@@ -114,4 +122,10 @@ def highlight_updated_cells(df: pd.DataFrame, update_tags: dict):
                 colors.loc[diff, upd_col] = 'background-color: yellow'
         return colors
 
-    return df.style.apply(_highlight, axis=None)
+    styled = df.style.apply(_highlight, axis=None)
+
+    # Hide the index column if we reset it (for cleaner display)
+    if has_duplicate_index:
+        styled = styled.hide(axis='index')
+
+    return styled

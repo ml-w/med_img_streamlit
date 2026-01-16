@@ -92,14 +92,17 @@ def streamlit_app():
         st.session_state.selected_display_tags = []
         st.session_state.selected_update_tags = []
 
-    if st.session_state.series_mode:
-        st.session_state.matcher_id = series_upload_df_id
-    elif st.session_state.matcher_id == series_upload_df_id:
-        st.session_state.matcher_id = upload_df_id
-
     active_unique_ids = series_unique_ids if st.session_state.series_mode else unique_ids
     ref_options = series_ref_tag_options if st.session_state.series_mode else ref_tag_options
     update_options = series_update_tag_defaults if st.session_state.series_mode else update_tag_defaults
+
+    # Determine the appropriate matcher_id for the current mode
+    expected_matcher_id = series_upload_df_id if st.session_state.series_mode else upload_df_id
+
+    # Only update matcher_id if it's not set or doesn't match the expected value for the current mode
+    if st.session_state.matcher_id not in active_unique_ids:
+        st.session_state.matcher_id = expected_matcher_id
+
     active_upload_df_id = st.session_state.matcher_id
 
     with st.expander(':bulb: **Click Here for User Tips on Best Practices**'):
