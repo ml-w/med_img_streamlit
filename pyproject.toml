@@ -1,0 +1,17 @@
+[project]
+name = "med-img-streamlit"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.4.1",
+    "opencv-python>=4.11.0.86",
+    "pandas>=2.3.3",
+    "plotly>=6.5.1",
+    "pydicom>=3.0.1",
+    "rich>=14.2.0",
+    "simpleitk>=2.5.3",
+    "streamlit>=1.52.2",
+    "tqdm>=4.67.1",
+]
