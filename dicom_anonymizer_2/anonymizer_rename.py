@@ -37,11 +37,19 @@ TAG_DICT = {
 }
 
 
-# Suffix sequence for anonymization (continuing ASCII table)
-# Starts with empty string, then lowercase letters, then uppercase, then digits
-SUFFIXES = [''] + [chr(i) for i in range(ord('a'), ord('z') + 1)]  # '', 'a', 'b', ..., 'z'
-SUFFIXES += [chr(i) for i in range(ord('A'), ord('Z') + 1)]         # 'A', 'B', ..., 'Z'
-SUFFIXES += [chr(i) for i in range(ord('0'), ord('9') + 1)]         # '0', '1', ..., '9'
+# Suffix sequence for anonymization (printable ASCII table, excluding uppercase)
+# Starts with empty string, then lowercase letters (a-z), then continues with
+# printable ASCII symbols and digits: !"#$%&'()*+,-./0-9:;<=>?@[\]^_`{|}~
+# Excludes uppercase letters A-Z (ASCII 65-90)
+SUFFIXES = ['']
+# First: lowercase letters a-z (ASCII 97-122)
+SUFFIXES += [chr(i) for i in range(ord('a'), ord('z') + 1)]
+# Then: symbols and digits from ! to @ (ASCII 33-64, before uppercase letters)
+SUFFIXES += [chr(i) for i in range(33, 65)]
+# Then: symbols from [ to ` (ASCII 91-96, after uppercase letters, before lowercase)
+SUFFIXES += [chr(i) for i in range(91, 97)]
+# Finally: remaining symbols { | } ~ (ASCII 123-126, after lowercase letters)
+SUFFIXES += [chr(i) for i in range(123, 127)]
 
 
 def setup_logging(verbose: bool = False) -> None:
