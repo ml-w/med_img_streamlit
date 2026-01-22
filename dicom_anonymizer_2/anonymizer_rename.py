@@ -2,7 +2,8 @@
 DICOM X-Ray Anonymizer
 
 A standalone script that anonymizes X-Ray DICOM files by implementing a
-series-based PatientName naming convention based on scan chronology per patient.
+series-based Scan ID (PatientID+suffix) assigned to AccessionNumber field based
+on scan chronology per patient.
 
 Usage:
     python anonymize_ngtcxr.py \
@@ -37,13 +38,13 @@ TAG_DICT = {
 }
 
 
-# Suffix sequence for anonymization (printable ASCII table, excluding uppercase)
-# Starts with empty string, then lowercase letters (a-z), then continues with
+# Suffix sequence for anonymization (printable ASCII table, excluding lowercase)
+# Starts with empty string, then uppercase letters (A-Z), then continues with
 # printable ASCII symbols and digits: !"#$%&'()*+,-./0-9:;<=>?@[\]^_`{|}~
-# Excludes uppercase letters A-Z (ASCII 65-90)
+# Excludes lowercase letters a-z (ASCII 97-122)
 SUFFIXES = ['']
-# First: lowercase letters a-z (ASCII 97-122)
-SUFFIXES += [chr(i) for i in range(ord('a'), ord('z') + 1)]
+# First: uppercase letters A-Z (ASCII 65-90)
+SUFFIXES += [chr(i) for i in range(ord('A'), ord('Z') + 1)]
 # Then: symbols and digits from ! to @ (ASCII 33-64, before uppercase letters)
 SUFFIXES += [chr(i) for i in range(33, 65)]
 # Then: symbols from [ to ` (ASCII 91-96, after uppercase letters, before lowercase)
@@ -176,22 +177,23 @@ def extract_metadata(dicom_files: list[Path], root_dir: str, output_dir: Optiona
 
 def generate_anonymized_names(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Generate anonymized PatientName values based on scan chronology per patient.
+    Generate anonymized Scan IDs based on scan chronology per patient.
 
     Logic:
     1. Group by PatientID, then by unique SeriesInstanceUID to identify series
     2. Sort series by StudyDate, then StudyTime (ascending)
-    3. First series: PatientName = PatientID (no suffix)
-    4. Later series: PatientName = PatientID + suffix (a, b, c, ...)
-    5. All files within the same series get the same anonymized name
+    3. First series: Scan ID = PatientID (no suffix)
+    4. Later series: Scan ID = PatientID + suffix (A, B, C, ...)
+    5. All files within the same series get the same Scan ID
+    6. Scan ID is assigned to AccessionNumber field
 
     Args:
         df: DataFrame with original metadata
 
     Returns:
-        DataFrame with added 'Anonymized_PatientName' column
+        DataFrame with added 'Anonymized_PatientName' column (Scan ID)
     """
-    logging.info("Generating anonymized patient names...")
+    logging.info("Generating anonymized Scan IDs (for AccessionNumber field)...")
 
     # Make a copy to avoid SettingWithCopyWarning
     df = df.copy()
@@ -260,7 +262,7 @@ def save_metadata_csv(df: pd.DataFrame, output_path: str, anonymized: bool = Fal
     Args:
         df: DataFrame with metadata
         output_path: Path for output CSV file
-        anonymized: If True, save anonymized PatientName; otherwise save original
+        anonymized: If True, save anonymized AccessionNumber; otherwise save original
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -268,8 +270,8 @@ def save_metadata_csv(df: pd.DataFrame, output_path: str, anonymized: bool = Fal
     # Select columns to save
     if anonymized:
         df_to_save = df.copy()
-        # Replace PatientName with anonymized version
-        df_to_save['PatientName'] = df_to_save['Anonymized_PatientName']
+        # Replace AccessionNumber with anonymized version
+        df_to_save['AccessionNumber'] = df_to_save['Anonymized_PatientName']
         # Drop internal columns
         columns_to_drop = ['file_path', 'output_path', 'Anonymized_PatientName']
         df_to_save = df_to_save.drop(columns=[col for col in columns_to_drop if col in df_to_save.columns])
@@ -284,7 +286,7 @@ def save_metadata_csv(df: pd.DataFrame, output_path: str, anonymized: bool = Fal
 
 def anonymize_dicom_files(df: pd.DataFrame) -> None:
     """
-    Anonymize DICOM files by modifying PatientName and saving to output directory.
+    Anonymize DICOM files by modifying AccessionNumber and saving to output directory.
 
     Args:
         df: DataFrame with file paths and anonymized names
@@ -304,16 +306,16 @@ def anonymize_dicom_files(df: pd.DataFrame) -> None:
             dataset = dcmread(str(input_path))
 
             # Log before modification
-            original_name = dataset.PatientName
+            original_accession = getattr(dataset, 'AccessionNumber', None)
             logging.debug(f"File: {input_path.name}")
-            logging.debug(f"  Original PatientName: {original_name}")
-            logging.debug(f"  New PatientName: {new_name}")
+            logging.debug(f"  Original AccessionNumber: {original_accession}")
+            logging.debug(f"  New AccessionNumber: {new_name}")
 
-            # Update PatientName
-            dataset.PatientName = str(new_name)
+            # Update AccessionNumber
+            dataset.AccessionNumber = str(new_name)
 
             # Verify the change
-            logging.debug(f"  Verified PatientName after update: {dataset.PatientName}")
+            logging.debug(f"  Verified AccessionNumber after update: {dataset.AccessionNumber}")
 
             # Create output directory
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -323,7 +325,7 @@ def anonymize_dicom_files(df: pd.DataFrame) -> None:
 
             # Verify saved file
             verification_ds = dcmread(str(output_path))
-            logging.debug(f"  Saved file PatientName: {verification_ds.PatientName}")
+            logging.debug(f"  Saved file AccessionNumber: {verification_ds.AccessionNumber}")
 
             success_count += 1
 
