@@ -1,29 +1,51 @@
+#!/usr/bin/env python3
 """
-DICOM X-Ray Anonymizer
+DICOM Anonymizer with CSV-based Mapping (Multiprocessing Version)
 
-A standalone script that anonymizes X-Ray DICOM files by implementing a
-series-based Scan ID (PatientID+suffix) assigned to AccessionNumber field based
-on scan chronology per patient.
+A two-stage workflow script for anonymizing DICOM files:
+1. Generate a CSV template with SeriesInstanceUID as key (with multiprocessing)
+2. Apply user-modified CSV to update DICOM tags (with multiprocessing)
 
 Usage:
-    python anonymize_ngtcxr.py \
-        --input-dir /path/to/xray/data \
-        --output-csv-original /path/to/original_metadata.csv \
-        --output-csv-anon /path/to/anonymized_metadata.csv
+    # Generate template
+    python anonymizer_rename.py generate \
+        --input-dir /path/to/dicom/data \
+        --template-csv template.csv \
+        [--num-workers N]
+
+    # Apply updates
+    python anonymizer_rename.py apply \
+        --input-dir /path/to/dicom/data \
+        --mapping-csv modified.csv \
+        --output-dir /path/to/output \
+        [--num-workers N] \
+        [--dry-run]
 """
 
-import argparse
-import logging
+import re
+import warnings
+from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List, Tuple
+import logging
+from rich.logging import RichHandler
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
+import click
 import pandas as pd
 from pydicom import dcmread
 from pydicom.errors import InvalidDicomError
 from pydicom.tag import Tag
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
+# Suppress pydicom warnings about invalid VR TM values globally
+warnings.filterwarnings('ignore', message='Invalid value for VR TM')
 
-# Define the DICOM tags to extract
+console = Console()
+
+# Define the DICOM tags to extract and update
 TAG_DICT = {
     'PatientName':              Tag((0x0010, 0x0010)),
     'PatientID':                Tag((0x0010, 0x0020)),
@@ -32,25 +54,11 @@ TAG_DICT = {
     'AccessionNumber':          Tag((0x0008, 0x0050)),
     'InstitutionName':          Tag((0x0008, 0x0080)),
     'StudyDate':                Tag((0x0008, 0x0020)),
-    'StudyTime':                Tag((0x0008, 0x0031)),
+    'StudyTime':                Tag((0x0008, 0x0030)),
+    'StudyInstanceUID':         Tag((0x0020, 0x000d)),
     'SeriesInstanceUID':        Tag((0x0020, 0x000e)),
     'BodyPartExamined':         Tag((0x0018, 0x0015))
 }
-
-
-# Suffix sequence for anonymization (printable ASCII table, excluding lowercase)
-# Starts with empty string, then uppercase letters (A-Z), then continues with
-# printable ASCII symbols and digits: !"#$%&'()*+,-./0-9:;<=>?@[\]^_`{|}~
-# Excludes lowercase letters a-z (ASCII 97-122)
-SUFFIXES = ['']
-# First: uppercase letters A-Z (ASCII 65-90)
-SUFFIXES += [chr(i) for i in range(ord('A'), ord('Z') + 1)]
-# Then: symbols and digits from ! to @ (ASCII 33-64, before uppercase letters)
-SUFFIXES += [chr(i) for i in range(33, 65)]
-# Then: symbols from [ to ` (ASCII 91-96, after uppercase letters, before lowercase)
-SUFFIXES += [chr(i) for i in range(91, 97)]
-# Finally: remaining symbols { | } ~ (ASCII 123-126, after lowercase letters)
-SUFFIXES += [chr(i) for i in range(123, 127)]
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -58,8 +66,9 @@ def setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        format='%(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[RichHandler(rich_tracebacks=True, show_time=True, show_path=False)]
     )
 
 
@@ -84,370 +93,688 @@ def discover_dicom_files(root_dir: str) -> list[Path]:
     return dicom_files
 
 
-def compute_output_path(file_path: Path, root_dir: Path, output_dir: Optional[Path] = None) -> Path:
+def process_single_file_for_metadata(filepath: str) -> Optional[Dict[str, any]]:
     """
-    Compute the output path for an anonymized DICOM file.
-
+    Process a single DICOM file and extract metadata.
+    This function is designed to be called by multiprocessing workers.
+    
     Args:
-        file_path: Original file path
-        root_dir: Original root directory
-        output_dir: Custom output directory (optional)
-
+        filepath: Path to the DICOM file
+        
     Returns:
-        Path for the anonymized file
+        Dictionary containing metadata and filepath, or None if failed
     """
-    if output_dir is None:
-        # Default: create sibling directory with "-Anonymized" suffix
-        output_base = root_dir.parent / f"{root_dir.name}-Anonymized"
-    else:
-        output_base = Path(output_dir)
+    try:
+        # Read DICOM file (stop before pixel data for efficiency)
+        dataset = dcmread(filepath, stop_before_pixels=True)
 
-    # Maintain relative directory structure
-    relative_path = file_path.relative_to(root_dir)
-    return output_base / relative_path
+        # Get SeriesInstanceUID
+        series_uid = getattr(dataset, 'SeriesInstanceUID', None)
+        if not series_uid:
+            return None
+
+        # Extract metadata
+        metadata = {'FilePath': filepath}
+        for tag_name in TAG_DICT.keys():
+            value = getattr(dataset, tag_name, None)
+
+            # Special handling for PatientName (PersonName objects)
+            if tag_name == 'PatientName' and value is not None:
+                value = ''.join(str(value).split('^')) if value else ''
+            
+            # Special handling for time fields - keep original format
+            elif tag_name == 'StudyTime' and value is not None:
+                value = str(value) if value else ''
+            
+            # Convert to string for CSV compatibility
+            metadata[tag_name] = str(value) if value is not None else ''
+
+        return metadata
+
+    except (InvalidDicomError, Exception):
+        return None
 
 
-def extract_metadata(dicom_files: list[Path], root_dir: str, output_dir: Optional[Path] = None) -> pd.DataFrame:
+def extract_series_metadata_parallel(dicom_files: List[Path], num_workers: int) -> dict:
     """
-    Extract metadata from DICOM files into a DataFrame.
+    Extract metadata from DICOM files in parallel, grouped by SeriesInstanceUID.
 
     Args:
         dicom_files: List of DICOM file paths
-        root_dir: Root directory path
-        output_dir: Custom output directory (optional)
+        num_workers: Number of parallel workers
 
     Returns:
-        DataFrame with extracted metadata
+        Dictionary mapping SeriesInstanceUID to metadata and file list
+        {
+            'series_uid': {
+                'metadata': {tag_name: value, ...},
+                'files': [Path, Path, ...]
+            }
+        }
     """
-    root_path = Path(root_dir)
-
-    # Initialize data storage
-    data = {
-        'file_path': [],
-        'output_path': [],
-        **{tag_name: [] for tag_name in TAG_DICT.keys()}
-    }
-
-    failed_files = []
-    processed_count = 0
-
-    logging.info("Extracting metadata from DICOM files...")
-
-    for file_path in dicom_files:
-        try:
-            # Read DICOM file (stop before pixel data for efficiency)
-            dataset = dcmread(str(file_path), stop_before_pixels=True)
-
-            # Store paths
-            data['file_path'].append(str(file_path))
-            data['output_path'].append(str(compute_output_path(file_path, root_path, output_dir)))
-
-            # Extract DICOM tags
-            for tag_name in TAG_DICT.keys():
-                value = getattr(dataset, tag_name, None)
-
-                # Special handling for PatientName (PersonName objects)
-                if tag_name == 'PatientName' and value is not None:
-                    # Convert PersonName to string
-                    value = ''.join(str(value).split('^')) if value else ''
-
-                data[tag_name].append(value)
-
-            processed_count += 1
-
-            if processed_count % 100 == 0:
-                logging.debug(f"Processed {processed_count}/{len(dicom_files)} files")
-
-        except InvalidDicomError as e:
-            logging.warning(f"Invalid DICOM file: {file_path} - {e}")
-            failed_files.append(str(file_path))
-        except Exception as e:
-            logging.warning(f"Error processing file {file_path}: {e}")
-            failed_files.append(str(file_path))
-
-    logging.info(f"Successfully processed {processed_count}/{len(dicom_files)} files")
-    if failed_files:
-        logging.warning(f"Failed to process {len(failed_files)} files")
-
-    # Create DataFrame
-    df = pd.DataFrame(data)
-
-    return df
-
-
-def generate_anonymized_names(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Generate anonymized Scan IDs based on scan chronology per patient.
-
-    Logic:
-    1. Group by PatientID, then by unique SeriesInstanceUID to identify series
-    2. Sort series by StudyDate, then StudyTime (ascending)
-    3. First series: Scan ID = PatientID (no suffix)
-    4. Later series: Scan ID = PatientID + suffix (A, B, C, ...)
-    5. All files within the same series get the same Scan ID
-    6. Scan ID is assigned to AccessionNumber field
-
-    Args:
-        df: DataFrame with original metadata
-
-    Returns:
-        DataFrame with added 'Anonymized_PatientName' column (Scan ID)
-    """
-    logging.info("Generating anonymized Scan IDs (for AccessionNumber field)...")
-
-    # Make a copy to avoid SettingWithCopyWarning
-    df = df.copy()
-
-    # Handle missing StudyDate/StudyTime for sorting (treat as earliest)
-    df['StudyDate'] = df['StudyDate'].fillna('')
-    df['StudyTime'] = df['StudyTime'].fillna('')
-    # Handle missing SeriesInstanceUID
-    df['SeriesInstanceUID'] = df['SeriesInstanceUID'].fillna('')
-
-    # Group by PatientID
-    grouped = df.groupby('PatientID', dropna=False)
-
-    anonymized_names = []
-
-    for patient_id, group in grouped:
-        # Get unique series and sort them chronologically
-        unique_series = group.drop_duplicates(subset=['SeriesInstanceUID']).sort_values(
-            ['StudyDate', 'StudyTime'], ascending=True
-        )
-
-        # Create mapping from SeriesInstanceUID to suffix index
-        series_to_suffix = {}
-        for idx, (_, series_row) in enumerate(unique_series.iterrows()):
-            series_to_suffix[series_row['SeriesInstanceUID']] = idx
-
-        # Assign names to all files based on their series
-        for _, row in group.iterrows():
-            series_idx = series_to_suffix[row['SeriesInstanceUID']]
-
-            if series_idx == 0:
-                # First series: no suffix
-                new_name = str(patient_id) if pd.notna(patient_id) else ''
-            else:
-                # Later series: add suffix from ASCII table sequence
-                suffix = SUFFIXES[series_idx] if series_idx < len(SUFFIXES) else f"_scan{series_idx}"
-                new_name = f"{patient_id}{suffix}"
-
-            anonymized_names.append((row.name, new_name))
-
-    # Sort by original index to maintain DataFrame order
-    anonymized_names.sort(key=lambda x: x[0])
-
-    # Create the new column
-    df['Anonymized_PatientName'] = [name for _, name in anonymized_names]
-
-    # Log statistics
-    unique_patients = df['PatientID'].nunique()
-    logging.info(f"Generated anonymized names for {unique_patients} patients")
-
-    # Log anonymization details per patient
-    for patient_id, group in grouped:
-        # Count unique series (not total files)
-        unique_series_count = group.drop_duplicates(subset=['SeriesInstanceUID']).shape[0]
-        total_files = len(group)
-        first_name = group.iloc[0]['PatientName']
-        logging.debug(f"PatientID {patient_id}: {unique_series_count} series, {total_files} files, original name '{first_name}'")
-
-    return df
-
-
-def save_metadata_csv(df: pd.DataFrame, output_path: str, anonymized: bool = False) -> None:
-    """
-    Save metadata to a CSV file.
-
-    Args:
-        df: DataFrame with metadata
-        output_path: Path for output CSV file
-        anonymized: If True, save anonymized AccessionNumber; otherwise save original
-    """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Select columns to save
-    if anonymized:
-        df_to_save = df.copy()
-        # Replace AccessionNumber with anonymized version
-        df_to_save['AccessionNumber'] = df_to_save['Anonymized_PatientName']
-        # Drop internal columns
-        columns_to_drop = ['file_path', 'output_path', 'Anonymized_PatientName']
-        df_to_save = df_to_save.drop(columns=[col for col in columns_to_drop if col in df_to_save.columns])
-    else:
-        # Drop internal columns
-        columns_to_drop = ['file_path', 'output_path', 'Anonymized_PatientName']
-        df_to_save = df.drop(columns=[col for col in columns_to_drop if col in df.columns])
-
-    df_to_save.to_csv(output_path, index=False)
-    logging.info(f"Saved {'anonymized' if anonymized else 'original'} metadata to: {output_path}")
-
-
-def anonymize_dicom_files(df: pd.DataFrame) -> None:
-    """
-    Anonymize DICOM files by modifying AccessionNumber and saving to output directory.
-
-    Args:
-        df: DataFrame with file paths and anonymized names
-    """
-    logging.info("Anonymizing DICOM files...")
-
-    success_count = 0
+    logging.info("Extracting metadata from DICOM files using multiprocessing...")
+    
+    series_data = defaultdict(lambda: {'metadata': {}, 'files': []})
     failed_count = 0
+    
+    # Convert Path objects to strings for multiprocessing
+    file_paths = [str(f) for f in dicom_files]
+    
+    # Process files in parallel with rich progress bar
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console
+    ) as progress:
+        
+        task = progress.add_task("[cyan]Extracting metadata...", total=len(file_paths))
+        
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all files for processing
+            future_to_file = {executor.submit(process_single_file_for_metadata, filepath): filepath
+                            for filepath in file_paths}
+            
+            # Process completed tasks
+            for future in as_completed(future_to_file):
+                filepath = future_to_file[future]
+                try:
+                    result = future.result()
+                    if result:
+                        series_uid = result['SeriesInstanceUID']
+                        file_path = Path(result['FilePath'])
+                        
+                        # Add file to series
+                        series_data[series_uid]['files'].append(file_path)
+                        
+                        # If this is the first file in the series, store metadata
+                        if not series_data[series_uid]['metadata']:
+                            metadata = {k: v for k, v in result.items() if k != 'FilePath'}
+                            series_data[series_uid]['metadata'] = metadata
+                        
+                        progress.update(task, advance=1,
+                                      description=f"[cyan]Processing: {Path(filepath).name}")
+                    else:
+                        failed_count += 1
+                        progress.update(task, advance=1)
+                except Exception as e:
+                    logging.warning(f"Error processing {filepath}: {e}")
+                    failed_count += 1
+                    progress.update(task, advance=1)
 
+    logging.info(f"Successfully processed {len(file_paths) - failed_count}/{len(file_paths)} files")
+    logging.info(f"Found {len(series_data)} unique series")
+    
+    if failed_count > 0:
+        logging.warning(f"Failed to process {failed_count} files")
+
+    return dict(series_data)
+
+
+def generate_template_csv(series_data: dict, template_path: str) -> None:
+    """
+    Generate a CSV template from series metadata.
+
+    Args:
+        series_data: Dictionary from extract_series_metadata_parallel()
+        template_path: Path for output CSV template
+    """
+    logging.info("Generating CSV template...")
+
+    # Prepare data for DataFrame
+    rows = []
+    for series_uid, data in series_data.items():
+        row = data['metadata'].copy()
+        row['FileCount'] = len(data['files'])
+        rows.append(row)
+
+    # Create DataFrame with SeriesInstanceUID as first column
+    df = pd.DataFrame(rows)
+    
+    # Reorder columns: SeriesInstanceUID first, then others, FileCount last
+    tag_columns = [tag for tag in TAG_DICT.keys() if tag != 'SeriesInstanceUID']
+    column_order = ['SeriesInstanceUID'] + tag_columns + ['FileCount']
+    df = df[column_order]
+
+    # Sort by SeriesInstanceUID for consistency
+    df = df.sort_values('SeriesInstanceUID')
+
+    # Save to CSV
+    output_path = Path(template_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False)
+
+    logging.info(f"Template CSV generated: {template_path}")
+    logging.info(f"Total series: {len(df)}")
+    logging.info(f"Total files: {df['FileCount'].sum()}")
+
+
+def validate_tag_value(tag_name: str, value: str) -> tuple[bool, str]:
+    """
+    Validate a DICOM tag value format.
+
+    Args:
+        tag_name: Name of the DICOM tag
+        value: Value to validate
+
+    Returns:
+        (is_valid, error_message)
+    """
+    # Empty values are allowed
+    if not value or pd.isna(value):
+        return True, ""
+
+    value = str(value).strip()
+
+    # Date fields: YYYYMMDD format
+    if tag_name in ['StudyDate', 'PatientBirthDate']:
+        if not re.match(r'^\d{8}$', value):
+            return False, f"{tag_name} must be in YYYYMMDD format (8 digits)"
+
+    # Time fields: Accept any numeric format (DICOM TM can be flexible)
+    elif tag_name == 'StudyTime':
+        # Accept any numeric value with optional decimal point (very permissive)
+        if not re.match(r'^\d+(\.\d+)?$', value):
+            return False, f"{tag_name} must contain only digits (with optional decimal point)"
+
+    # Sex field: M, F, O, or empty
+    elif tag_name == 'PatientSex':
+        if value.upper() not in ['M', 'F', 'O', '']:
+            return False, f"{tag_name} must be M, F, O, or empty"
+
+    return True, ""
+
+
+def load_and_validate_mapping_csv(csv_path: str) -> pd.DataFrame:
+    """
+    Load and validate a CSV mapping file.
+
+    Args:
+        csv_path: Path to the CSV file
+
+    Returns:
+        Validated DataFrame
+
+    Raises:
+        ValueError: If validation fails
+    """
+    logging.info(f"Loading mapping CSV: {csv_path}")
+
+    # Load CSV
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception as e:
+        raise ValueError(f"Failed to read CSV file: {e}")
+
+    # Check for required column
+    if 'SeriesInstanceUID' not in df.columns:
+        raise ValueError("CSV must contain 'SeriesInstanceUID' column")
+
+    # Check for duplicate SeriesInstanceUID
+    duplicates = df['SeriesInstanceUID'].duplicated()
+    if duplicates.any():
+        dup_uids = df[duplicates]['SeriesInstanceUID'].tolist()
+        raise ValueError(f"Duplicate SeriesInstanceUID found: {dup_uids}")
+
+    # Validate tag values
+    errors = []
     for idx, row in df.iterrows():
-        input_path = Path(row['file_path'])
-        output_path = Path(row['output_path'])
-        new_name = row['Anonymized_PatientName']
+        for tag_name in TAG_DICT.keys():
+            if tag_name == 'SeriesInstanceUID':
+                continue  # Skip the key column
+            
+            if tag_name in row:
+                value = row[tag_name]
+                is_valid, error_msg = validate_tag_value(tag_name, value)
+                if not is_valid:
+                    errors.append(f"Row {idx + 2}: {error_msg}")
 
+    if errors:
+        error_summary = "\n".join(errors[:10])  # Show first 10 errors
+        if len(errors) > 10:
+            error_summary += f"\n... and {len(errors) - 10} more errors"
+        raise ValueError(f"CSV validation failed:\n{error_summary}")
+
+    logging.info("CSV validation passed")
+    logging.info(f"Found {len(df)} series in mapping CSV")
+
+    return df
+
+
+def update_dicom_tags(dataset, tag_updates: dict) -> None:
+    """
+    Update DICOM dataset tags in-place.
+
+    Args:
+        dataset: pydicom Dataset object
+        tag_updates: Dictionary mapping tag names to new values
+    """
+    import warnings
+    
+    for tag_name, new_value in tag_updates.items():
+        if tag_name == 'SeriesInstanceUID':
+            continue  # Never update the key
+
+        # Skip empty values (keep original)
+        if pd.isna(new_value) or str(new_value).strip() == '':
+            continue
+
+        # Set the attribute
         try:
-            # Read DICOM file
-            dataset = dcmread(str(input_path))
+            # Suppress pydicom validation warnings for time fields
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='Invalid value for VR TM')
+                setattr(dataset, tag_name, str(new_value))
+        except Exception as e:
+            logging.warning(f"Failed to set {tag_name} to '{new_value}': {e}")
 
-            # Log before modification
-            original_accession = getattr(dataset, 'AccessionNumber', None)
-            logging.debug(f"File: {input_path.name}")
-            logging.debug(f"  Original AccessionNumber: {original_accession}")
-            logging.debug(f"  New AccessionNumber: {new_name}")
 
-            # Update AccessionNumber
-            dataset.AccessionNumber = str(new_name)
+def process_single_file_for_update(args: Tuple[str, dict, str, Path, bool]) -> Tuple[bool, str]:
+    """
+    Process a single DICOM file for update.
+    This function is designed to be called by multiprocessing workers.
+    
+    Args:
+        args: Tuple of (filepath, tag_updates, anonymized_patient_id, output_dir, dry_run)
+        
+    Returns:
+        Tuple of (success, error_message)
+    """
+    filepath, tag_updates, anonymized_patient_id, output_dir, dry_run = args
+    
+    try:
+        # Read DICOM file
+        dataset = dcmread(filepath)
 
-            # Verify the change
-            logging.debug(f"  Verified AccessionNumber after update: {dataset.AccessionNumber}")
+        # Update tags
+        update_dicom_tags(dataset, tag_updates)
 
-            # Create output directory
+        if not dry_run:
+            # Compute output path: output_dir / anonymized_patient_id / series_folder / filename
+            file_path = Path(filepath)
+            
+            # Create subfolder structure: anonymized_patient_id / original_parent_folder_name
+            # Use the immediate parent folder name to group files from the same series
+            parent_folder_name = file_path.parent.name
+            
+            output_path = output_dir / anonymized_patient_id / parent_folder_name / file_path.name
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Save anonymized file
+            # Save file
             dataset.save_as(str(output_path))
 
-            # Verify saved file
-            verification_ds = dcmread(str(output_path))
-            logging.debug(f"  Saved file AccessionNumber: {verification_ds.AccessionNumber}")
+        return (True, "")
 
-            success_count += 1
-
-            if success_count % 100 == 0:
-                logging.debug(f"Anonymized {success_count}/{len(df)} files")
-
-        except Exception as e:
-            logging.error(f"Failed to anonymize {input_path}: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
-            failed_count += 1
-
-    logging.info(f"Anonymization complete: {success_count} successful, {failed_count} failed")
+    except Exception as e:
+        return (False, str(e))
 
 
-def main():
-    """Main entry point for the script."""
-    parser = argparse.ArgumentParser(
-        description='Anonymize DICOM X-Ray files based on series chronology',
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+def apply_updates_from_csv_parallel(
+    series_data: dict,
+    mapping_df: pd.DataFrame,
+    output_dir: Path,
+    num_workers: int,
+    dry_run: bool = False
+) -> dict:
+    """
+    Apply CSV mapping updates to DICOM files using multiprocessing.
 
-    parser.add_argument(
-        '--input-dir',
-        required=True,
-        help='Root directory containing DICOM files'
-    )
+    Args:
+        series_data: Dictionary from extract_series_metadata_parallel()
+        mapping_df: DataFrame with mapping information
+        output_dir: Output directory
+        num_workers: Number of parallel workers
+        dry_run: If True, simulate without writing files
 
-    parser.add_argument(
-        '--output-csv-original',
-        required=True,
-        help='Path for original metadata CSV output'
-    )
+    Returns:
+        Statistics dictionary
+    """
+    mode_prefix = "[DRY RUN] " if dry_run else ""
+    logging.info(f"{mode_prefix}Applying updates to DICOM files using multiprocessing...")
 
-    parser.add_argument(
-        '--output-csv-anon',
-        required=True,
-        help='Path for anonymized metadata CSV output'
-    )
+    # Create mapping from SeriesInstanceUID to tag updates
+    mapping_dict = {}
+    for _, row in mapping_df.iterrows():
+        series_uid = row['SeriesInstanceUID']
+        tag_updates = {tag: row.get(tag, '') for tag in TAG_DICT.keys() if tag != 'SeriesInstanceUID'}
+        mapping_dict[series_uid] = tag_updates
 
-    parser.add_argument(
-        '--output-dir',
-        default=None,
-        help='Custom output directory (default: <input-dir>-Anonymized)'
-    )
+    # Statistics
+    stats = {
+        'total_series_in_csv': len(mapping_df),
+        'total_series_in_dicom': len(series_data),
+        'updated_series': 0,
+        'total_files': 0,
+        'updated_files': 0,
+        'failed_files': 0,
+        'skipped_files': 0,
+        'unmatched_series_in_csv': [],
+        'unmatched_series_in_dicom': []
+    }
 
-    parser.add_argument(
-        '--csv-only',
-        action='store_true',
-        help='Only generate CSV files without modifying DICOM files'
-    )
+    # Find unmatched series
+    csv_series = set(mapping_dict.keys())
+    dicom_series = set(series_data.keys())
+    stats['unmatched_series_in_csv'] = list(csv_series - dicom_series)
+    stats['unmatched_series_in_dicom'] = list(dicom_series - csv_series)
 
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Enable verbose logging'
-    )
+    if stats['unmatched_series_in_csv']:
+        logging.warning(f"Series in CSV but not in DICOM files: {len(stats['unmatched_series_in_csv'])}")
+        for uid in stats['unmatched_series_in_csv'][:5]:
+            logging.debug(f"  - {uid}")
 
-    args = parser.parse_args()
+    if stats['unmatched_series_in_dicom']:
+        logging.info(f"Series in DICOM but not in CSV (will be skipped): {len(stats['unmatched_series_in_dicom'])}")
+        for uid in stats['unmatched_series_in_dicom'][:5]:
+            logging.debug(f"  - {uid}")
 
-    # Setup logging
-    setup_logging(args.verbose)
+    # Prepare tasks for multiprocessing
+    tasks = []
+    for series_uid, data in series_data.items():
+        if series_uid not in mapping_dict:
+            # Skip series not in CSV
+            stats['skipped_files'] += len(data['files'])
+            continue
 
+        tag_updates = mapping_dict[series_uid]
+        files = data['files']
+        stats['total_files'] += len(files)
+        
+        # Get anonymized patient ID from the mapping
+        anonymized_patient_id = tag_updates.get('PatientID', 'UNKNOWN')
+        if not anonymized_patient_id or pd.isna(anonymized_patient_id) or str(anonymized_patient_id).strip() == '':
+            anonymized_patient_id = 'UNKNOWN'
+
+        # Create tasks for each file in this series
+        for file_path in files:
+            tasks.append((str(file_path), tag_updates, anonymized_patient_id, output_dir, dry_run))
+
+    # Process files in parallel with rich progress bar
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console
+    ) as progress:
+        
+        task = progress.add_task(f"[cyan]{mode_prefix}Updating files...", total=len(tasks))
+        
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all tasks
+            future_to_task = {executor.submit(process_single_file_for_update, task_args): task_args
+                            for task_args in tasks}
+            
+            # Process completed tasks
+            for future in as_completed(future_to_task):
+                task_args = future_to_task[future]
+                filepath = task_args[0]
+                try:
+                    success, error_msg = future.result()
+                    if success:
+                        stats['updated_files'] += 1
+                        progress.update(task, advance=1,
+                                      description=f"[cyan]{mode_prefix}Processing: {Path(filepath).name}")
+                    else:
+                        logging.error(f"Failed to update {filepath}: {error_msg}")
+                        stats['failed_files'] += 1
+                        progress.update(task, advance=1)
+                except Exception as e:
+                    logging.error(f"Error processing {filepath}: {e}")
+                    stats['failed_files'] += 1
+                    progress.update(task, advance=1)
+
+    # Count updated series (series with at least one successfully updated file)
+    for series_uid in series_data.keys():
+        if series_uid in mapping_dict:
+            stats['updated_series'] += 1
+
+    logging.info(f"{mode_prefix}Update complete!")
+
+    return stats
+
+
+def print_statistics(stats: dict, output_dir: Optional[Path] = None, dry_run: bool = False) -> None:
+    """
+    Print statistics summary.
+
+    Args:
+        stats: Statistics dictionary from apply_updates_from_csv_parallel()
+        output_dir: Output directory path
+        dry_run: Whether this was a dry run
+    """
+    mode_text = " (DRY RUN)" if dry_run else ""
+    
     logging.info("=" * 60)
-    logging.info("DICOM X-Ray Anonymizer")
+    logging.info(f"SUMMARY{mode_text}")
+    logging.info("=" * 60)
+    logging.info(f"Series in CSV: {stats['total_series_in_csv']}")
+    logging.info(f"Series in DICOM files: {stats['total_series_in_dicom']}")
+    logging.info(f"Successfully updated series: {stats['updated_series']}")
+    logging.info(f"Total files to process: {stats['total_files']}")
+    logging.info(f"Successfully updated files: {stats['updated_files']}")
+    logging.info(f"Failed files: {stats['failed_files']}")
+    logging.info(f"Skipped files (not in CSV): {stats['skipped_files']}")
+    
+    if stats['unmatched_series_in_csv']:
+        logging.info(f"Series in CSV but not found in DICOM: {len(stats['unmatched_series_in_csv'])}")
+    
+    if stats['unmatched_series_in_dicom']:
+        logging.info(f"Series in DICOM but not in CSV (skipped): {len(stats['unmatched_series_in_dicom'])}")
+    
+    if output_dir and not dry_run:
+        logging.info(f"Output directory: {output_dir}")
+        logging.info(f"Files organized by anonymized PatientID in subfolders")
+    
+    if dry_run:
+        logging.info("No files were modified (dry-run mode)")
+    
     logging.info("=" * 60)
 
+
+# Click CLI
+@click.group()
+@click.option('--verbose', is_flag=True, help='Enable verbose logging')
+@click.pass_context
+def cli(ctx, verbose):
+    """
+    DICOM Anonymizer with CSV-based Mapping (Multiprocessing Version)
+    
+    Two-stage workflow for flexible DICOM anonymization:
+    1. Generate a CSV template with current DICOM tag values (parallel processing)
+    2. Edit the CSV and apply changes to DICOM files (parallel processing)
+    
+    Files are organized by anonymized PatientID in the output directory.
+    """
+    ctx.ensure_object(dict)
+    ctx.obj['verbose'] = verbose
+    setup_logging(verbose)
+
+
+@cli.command()
+@click.option(
+    '--input-dir',
+    required=True,
+    type=click.Path(exists=True, file_okay=False, dir_okay=True),
+    help='Root directory containing DICOM files'
+)
+@click.option(
+    '--template-csv',
+    required=True,
+    type=click.Path(),
+    help='Path for output CSV template'
+)
+@click.option(
+    '-n', '--num-workers',
+    default=None,
+    type=int,
+    help='Number of parallel workers (default: CPU count)'
+)
+@click.option(
+    '--verbose',
+    is_flag=True,
+    help='Enable verbose logging'
+)
+@click.pass_context
+def generate(ctx, input_dir, template_csv, num_workers, verbose):
+    """
+    Generate a CSV template from DICOM files using multiprocessing.
+    
+    Scans all DICOM files in the input directory, groups them by
+    SeriesInstanceUID, and creates a CSV template with current tag values
+    that can be edited by the user.
+    """
+    # Setup logging with verbose flag
+    if verbose:
+        setup_logging(verbose=True)
+    
+    # Determine number of workers
+    if num_workers is None:
+        num_workers = multiprocessing.cpu_count()
+    
     try:
+        logging.info("=" * 60)
+        logging.info("DICOM Anonymizer - Generate Template (Multiprocessing)")
+        logging.info("=" * 60)
+        logging.info(f"Workers: {num_workers}")
+
         # Step 1: Discover DICOM files
-        dicom_files = discover_dicom_files(args.input_dir)
+        dicom_files = discover_dicom_files(input_dir)
         if not dicom_files:
             logging.error("No DICOM files found. Exiting.")
             return
 
-        # Step 2: Extract metadata
-        df = extract_metadata(dicom_files, args.input_dir, args.output_dir)
+        # Step 2: Extract metadata grouped by series (parallel)
+        series_data = extract_series_metadata_parallel(dicom_files, num_workers)
+        if not series_data:
+            logging.error("No valid series found. Exiting.")
+            return
 
-        # Step 3: Save original metadata CSV
-        save_metadata_csv(df, args.output_csv_original, anonymized=False)
-
-        # Step 4: Generate anonymized names
-        df = generate_anonymized_names(df)
-
-        # Step 5: Save anonymized metadata CSV
-        save_metadata_csv(df, args.output_csv_anon, anonymized=True)
-
-        # Step 6: Anonymize DICOM files (skip if csv-only mode)
-        if not args.csv_only:
-            anonymize_dicom_files(df)
-        else:
-            logging.info("CSV-only mode: Skipping DICOM file modification")
-
-        # Print summary
-        logging.info("=" * 60)
-        logging.info("SUMMARY")
-        logging.info("=" * 60)
-        logging.info(f"Total DICOM files found: {len(dicom_files)}")
-        logging.info(f"Unique patients: {df['PatientID'].nunique()}")
-
-        if args.csv_only:
-            logging.info("Mode: CSV-only (no DICOM files modified)")
-        else:
-            logging.info(f"Files successfully anonymized: {len(df)}")
-
-        logging.info(f"Original metadata: {args.output_csv_original}")
-        logging.info(f"Anonymized metadata: {args.output_csv_anon}")
-
-        if not args.csv_only:
-            if args.output_dir:
-                logging.info(f"Anonymized files: {args.output_dir}")
-            else:
-                output_dir = Path(args.input_dir).parent / f"{Path(args.input_dir).name}-Anonymized"
-                logging.info(f"Anonymized files: {output_dir}")
+        # Step 3: Generate CSV template
+        generate_template_csv(series_data, template_csv)
 
         logging.info("=" * 60)
-        logging.info("Anonymization complete!")
+        logging.info("Template generation complete!")
+        logging.info("=" * 60)
+        logging.info(f"Next steps:")
+        logging.info(f"1. Edit the CSV file: {template_csv}")
+        logging.info(f"2. Run: python {Path(__file__).name} apply --input-dir {input_dir} --mapping-csv {template_csv} --output-dir <output>")
         logging.info("=" * 60)
 
     except Exception as e:
-        logging.error(f"An error occurred: {e}", exc_info=args.verbose)
+        logging.error(f"An error occurred: {e}", exc_info=verbose)
+        raise
+
+
+@cli.command()
+@click.option(
+    '--input-dir',
+    required=True,
+    type=click.Path(exists=True, file_okay=False, dir_okay=True),
+    help='Root directory containing DICOM files'
+)
+@click.option(
+    '--mapping-csv',
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help='Path to modified CSV mapping file'
+)
+@click.option(
+    '--output-dir',
+    type=click.Path(),
+    help='Output directory for updated DICOM files (default: <input-dir>-Updated)'
+)
+@click.option(
+    '-n', '--num-workers',
+    default=None,
+    type=int,
+    help='Number of parallel workers (default: CPU count)'
+)
+@click.option(
+    '--dry-run',
+    is_flag=True,
+    help='Simulate updates without modifying files'
+)
+@click.option(
+    '--verbose',
+    is_flag=True,
+    help='Enable verbose logging'
+)
+@click.pass_context
+def apply(ctx, input_dir, mapping_csv, output_dir, num_workers, dry_run, verbose):
+    """
+    Apply CSV mapping to update DICOM files using multiprocessing.
+    
+    Reads the modified CSV file and updates DICOM tags for all files
+    in each series according to the SeriesInstanceUID mapping.
+    
+    Files not in the CSV will be skipped (not anonymized).
+    Output files are organized by anonymized PatientID in subfolders.
+    """
+    # Setup logging with verbose flag
+    if verbose:
+        setup_logging(verbose=True)
+    
+    # Determine number of workers
+    if num_workers is None:
+        num_workers = multiprocessing.cpu_count()
+    
+    try:
+        mode_text = " (DRY RUN)" if dry_run else ""
+        logging.info("=" * 60)
+        logging.info(f"DICOM Anonymizer - Apply Updates{mode_text} (Multiprocessing)")
+        logging.info("=" * 60)
+        logging.info(f"Workers: {num_workers}")
+
+        # Set default output directory
+        if not output_dir:
+            output_dir = Path(input_dir).parent / f"{Path(input_dir).name}-Updated"
+        output_dir = Path(output_dir)
+
+        # Step 1: Load and validate CSV
+        mapping_df = load_and_validate_mapping_csv(mapping_csv)
+
+        # Step 2: Discover DICOM files
+        dicom_files = discover_dicom_files(input_dir)
+        if not dicom_files:
+            logging.error("No DICOM files found. Exiting.")
+            return
+
+        # Step 3: Extract metadata grouped by series (parallel)
+        series_data = extract_series_metadata_parallel(dicom_files, num_workers)
+        if not series_data:
+            logging.error("No valid series found. Exiting.")
+            return
+
+        # Step 4: Apply updates (parallel)
+        stats = apply_updates_from_csv_parallel(
+            series_data,
+            mapping_df,
+            output_dir,
+            num_workers,
+            dry_run
+        )
+
+        # Step 5: Print summary
+        print_statistics(stats, output_dir, dry_run)
+
+        if not dry_run:
+            logging.info("=" * 60)
+            logging.info("Update complete!")
+            logging.info("=" * 60)
+        else:
+            logging.info("=" * 60)
+            logging.info("Dry run complete - no files were modified")
+            logging.info("Remove --dry-run flag to apply changes")
+            logging.info("=" * 60)
+
+    except Exception as e:
+        logging.error(f"An error occurred: {e}", exc_info=verbose)
         raise
 
 
 if __name__ == "__main__":
-    main()
+    cli()
