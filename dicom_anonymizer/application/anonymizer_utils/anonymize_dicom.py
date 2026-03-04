@@ -70,12 +70,22 @@ def create_dcm_df(
 
     if series_mode:
         logger.get_logger('anonymizer').info("Executing in series mode")
-        for file_dir in folder_dir.rglob(fformat):
+        # Get the all the files that need processing
+        progress_bar.progress(0, text="Finding files to process...")
+        file_dirs = list(folder_dir.rglob(fformat))
+        p = 10.0
+        progress_bar.progress(p / 100, text=f"Found {len(file_dirs)} files.")
+        for i, file_dir in enumerate(file_dirs):
+            p = 10.0 + 90.0 * (i + 1) / max(len(file_dirs), 1)
             series_dir = file_dir.parent
 
+            logger.get_logger('anonymizer').debug(f"Parsing series: {series_dir}")
+            progress_bar.progress(min(p / 100, 1.0), text=f"Parsing series: {series_dir}")
             try:
                 f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
             except Exception as e:
+                logger.get_logger('anonymizer').warning(f"Cannot process file: {file_dir}. Skipping...")
+                logger.get_logger('anonymizer').debug(f"Original error: {e = }")
                 continue
 
             dcm_info['folder_dir'].append(str(series_dir))
@@ -146,11 +156,6 @@ def create_dcm_df(
         df.set_index('PK', inplace=True)
     else:
         logger.get_logger('anonymizer').error("Something wrong, nothing is globbed")
-        df = None
-            
-    if not df is None:
-        df['PK'] = df[unique_ids].astype(str).agg('_'.join, axis=1)
-        df.set_index('PK', inplace=True)
     return df
 
 def consolidate_tags(row: pd.Series, update_tags: dict) -> dict: 

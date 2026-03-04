@@ -103,7 +103,12 @@ def highlight_updated_cells(df: pd.DataFrame, update_tags: dict):
 
     Returns:
         pandas.io.formats.style.Styler: Styled DataFrame with updates highlighted.
+            Styling is skipped (plain Styler returned) if the index is non-unique,
+            as pandas Styler does not support non-unique indices.
     """
+    if not df.index.is_unique:
+        return df.style
+
     def _highlight(data: pd.DataFrame) -> pd.DataFrame:
         colors = pd.DataFrame('', index=data.index, columns=data.columns)
         for tag in update_tags:

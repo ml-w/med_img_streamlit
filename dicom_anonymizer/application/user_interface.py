@@ -181,7 +181,10 @@ def streamlit_app():
             uids_df = uids_df.loc[~uids_df.index.duplicated()]
         st.session_state.uids = uids_df
 
-        edit_df = create_update_cols(st.session_state.uids.copy(), active_update_tags)
+        # edit_df uses a plain RangeIndex: the PK index from dcm_info is only needed
+        # for the dedup above and is never shown or matched by index downstream.
+        # A non-unique PK (e.g. from null DICOM tags) would break pandas Styler.
+        edit_df = create_update_cols(st.session_state.uids.reset_index(drop=True).copy(), active_update_tags)
         st.session_state.edit_df = edit_df
 
         case_desc = 'unique series' if st.session_state.series_mode else 'unique cases'
@@ -230,6 +233,7 @@ def streamlit_app():
                     except Exception:
                         upload_error.error(':warning: Error: Unable to read uploaded file. Please input your updates in the template and upload again.')
 
+        # Highlight cells that are going to be updated
         styled_df = highlight_updated_cells(st.session_state.edit_df, active_update_tags)
         display_data.dataframe(
             styled_df,
