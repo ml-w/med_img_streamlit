@@ -1,7 +1,4 @@
 
-[global]
-developmentMode = true
-
 [server]
 port = 8502
 enableXsrfProtection = false

@@ -1,3 +1,4 @@
+import re
 import pydicom
 from pydicom.errors import InvalidDicomError
 from pydicom import *
@@ -64,7 +65,8 @@ def create_dcm_df(
 
     dcm_info = {
         'folder_dir': [],
-        'output_dir': []
+        'output_dir': [],
+        'file_path': [],   # actual path of each DICOM file; used at anonymization time
     }
     dcm_info.update({dcm_tag: [] for dcm_tag in all_tags})
 
@@ -90,6 +92,7 @@ def create_dcm_df(
 
             dcm_info['folder_dir'].append(str(series_dir))
             dcm_info['output_dir'].append(create_output_dir(series_dir, folder_dir))
+            dcm_info['file_path'].append(str(file_dir))
 
             # Gather information from DICOM tags
             for dcm_tag in all_tags:
@@ -99,8 +102,10 @@ def create_dcm_df(
                     dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
 
         logger.get_logger('anonymizer').info(f"Length of each item in dcm_info: {', '.join([f'{key}: {len(value)}' for key, value in dcm_info.items()])}")
+        # No dedup here — each row is one file. The UI deduplicates for display/editing
+        # (edit_df) via the user-selected PK, but dcm_info keeps every file so that the
+        # Run step can process each file exactly once without any directory-based rglob.
         df = pd.DataFrame(dcm_info)
-        df.drop_duplicates(subset=unique_ids, inplace=True)
     else:
         if folder_dir.is_dir():
             processed = []
@@ -195,7 +200,9 @@ def remove_info(dataset: Dataset,
                 va_type: Optional[list[str]],
                 tags: Optional[list[tuple]],
                 update: Optional[dict],
-                tags_2_spare: list[tuple]):
+                tags_2_spare: list[tuple],
+                extra_tags_2_anon: Optional[list] = None,
+                regex_pattern: Optional[str] = None):
     """
     Removes (anonymizes) or updates specific information from a DICOM dataset.
 
@@ -204,13 +211,15 @@ def remove_info(dataset: Dataset,
         data_element: The specific data element (tag) to be processed.
         va_type (list, optional): A list of VR types that should be cleared.
         tags (list of tuples, optional): A list of DICOM tags for which the value should be cleared.
-        update (dict, optional): A dictionary containing tags as keys and the new values as values. 
-        tags_2_spare (list, optional): A list of tags that should be spared from deletion or anonymization. 
+        update (dict, optional): A dictionary containing tags as keys and the new values as values.
+        tags_2_spare (list, optional): A list of tags that should be spared from deletion or anonymization.
+        extra_tags_2_anon (list, optional): Additional user-specified tags whose values are cleared.
+        regex_pattern (str, optional): A regex pattern; any string value matching it is replaced with "Anonymized".
 
     Returns:
         None: The function modifies the data element in place and does not return a value.
     """
-    # Spare sequence name
+    # Spare sequence name — takes priority over everything
     if data_element.tag in tags_2_spare:
         return
 
@@ -220,13 +229,25 @@ def remove_info(dataset: Dataset,
             data_element.value = "Anonymized"
         except:
             data_element.value = ""
-        
-    # Delete by tag
+
+    # Delete by built-in tag list
     if data_element.tag in tags:
         data_element.value = ""
 
+    # Delete by user-specified extra tags to anonymize
+    if extra_tags_2_anon and data_element.tag in extra_tags_2_anon:
+        data_element.value = ""
+
+    # Regex match anonymization — replaces matching string values with "Anonymized"
+    if regex_pattern:
+        val = data_element.value
+        if isinstance(val, str) and re.search(regex_pattern, val):
+            try:
+                data_element.value = "Anonymized"
+            except:
+                data_element.value = ""
+
     if not update is None:
-        keylist = list(update.keys())
         if data_element.tag in list(update.keys()):
             data_element.value = update[data_element.tag]
             
@@ -236,7 +257,9 @@ def anonymize(file_dir: str,
               va_type: Optional[list] = None,
               update: Optional[dict] = None,
               tags_2_spare: Optional[dict] = None,
-              tags_2_create: Optional[dict] = None):
+              tags_2_create: Optional[dict] = None,
+              extra_tags_2_anon: Optional[list] = None,
+              regex_pattern: Optional[str] = None):
     """
     - Anonymizes a DICOM file by removing sensitive information based on specified tags. 
     - If no tags are provided, defaults to a predefined list. 
@@ -295,10 +318,18 @@ def anonymize(file_dir: str,
         ]
     try:
         f = pydicom.dcmread(str(file_dir))
-        
+
         # Remove and update tags
         f.remove_private_tags()
-        f.walk(lambda x1, x2: remove_info(x1, x2, tags=tags, va_type=va_type, update=update, tags_2_spare=tags_2_spare))
+        f.walk(lambda x1, x2: remove_info(
+            x1, x2,
+            tags=tags,
+            va_type=va_type,
+            update=update,
+            tags_2_spare=tags_2_spare,
+            extra_tags_2_anon=extra_tags_2_anon,
+            regex_pattern=regex_pattern,
+        ))
         
         # Create new tags
         for dcm_tag, value in tags_2_create.items():

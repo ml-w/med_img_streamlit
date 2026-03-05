@@ -1,0 +1,21 @@
+[project]
+name = "dicom-anonymizer"
+version = "1.0.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.2.3",
+    "pydicom>=3.0.1",
+    "streamlit>=1.29.0",
+    "rich",
+    "click",
+]
+
+[dependency-groups]
+dev = ["pytest>=7.0.0"]
+build = ["pyinstaller<=5.10.0"]
+
+[project.scripts]
+dicom-anonymizer = "run_app:main"
+
+[tool.uv]
+package = false

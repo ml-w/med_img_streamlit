@@ -6,3 +6,6 @@ __pycache__/
 
 notes*.md
 /temp
+
+# Created during first use
+.session.json

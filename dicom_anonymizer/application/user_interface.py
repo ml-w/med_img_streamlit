@@ -16,6 +16,8 @@ from app_settings.config import (
     upload_df_id,
     tags_2_anon,
     tags_2_spare,
+    tags_2_anon_extra,
+    regex_pattern_default,
     new_tags,
     vr_type_options,
     vr_type_defaults,
@@ -72,6 +74,8 @@ def streamlit_app():
         "selected_display_tags": [],
         "selected_update_tags": [],
         "spare_tags_input": "",
+        "anon_tags_input": "",
+        "regex_pattern_input": regex_pattern_default or "",
         "skip_unmatched": False,
         "unmatched_upload_ids": [],
         "subfolder_tag": "",
@@ -379,9 +383,49 @@ def streamlit_app():
             elif st.session_state.spare_tags_input.strip():
                 st.warning(':warning: No valid tags found — check the format `(XXXX|XXXX)`.')
 
-        # Collect active VR types and effective spare tags for the run
+            st.divider()
+            st.caption('**Additional tags to anonymize** — values in these tags are always cleared to an empty string. '
+                       'Same format as tags to spare. Tags to spare take priority if a tag appears in both lists. '
+                       'Example: `(0010|0050),(0010|0090)`')
+            st.text_input('Tags to anonymize', key='anon_tags_input',
+                          placeholder='(0010|0050),(0010|0090)')
+            user_anon = _parse_spare_tags(st.session_state.anon_tags_input)
+            if user_anon:
+                st.success(f'Parsed {len(user_anon)} additional tag(s) to anonymize: '
+                           + ', '.join(f'({g:04X}|{e:04X})' for g, e in user_anon))
+                all_spare = list(tags_2_spare) + user_spare
+                overlap = [t for t in user_anon if t in all_spare]
+                if overlap:
+                    st.warning(
+                        ':warning: The following tag(s) appear in both **tags to spare** and **tags to anonymize** — '
+                        'they will be **spared** (spare takes priority): '
+                        + ', '.join(f'({g:04X}|{e:04X})' for g, e in overlap)
+                    )
+            elif st.session_state.anon_tags_input.strip():
+                st.warning(':warning: No valid tags found — check the format `(XXXX|XXXX)`.')
+
+            st.divider()
+            st.caption('**Regex match anonymization** — any DICOM string value matching the pattern is replaced with '
+                       '"Anonymized". Only one pattern is supported. Use standard Python regex syntax.')
+            st.text_input('Regex pattern', key='regex_pattern_input',
+                          placeholder=r'e.g., \b\d{3}-\d{2}-\d{4}\b')
+            if st.session_state.regex_pattern_input.strip():
+                try:
+                    re.compile(st.session_state.regex_pattern_input)
+                    st.success(f'Valid regex pattern: `{st.session_state.regex_pattern_input}`')
+                except re.error as exc:
+                    st.error(f':warning: Invalid regex pattern: {exc}')
+
+        # Collect active VR types and effective spare/anon tags for the run
         active_va_types = [vr for vr in vr_type_options if st.session_state.get(f'vr_{vr}', vr in vr_type_defaults)]
         effective_tags_2_spare = list(tags_2_spare) + _parse_spare_tags(st.session_state.spare_tags_input)
+        effective_extra_tags_2_anon = list(tags_2_anon_extra) + _parse_spare_tags(st.session_state.anon_tags_input)
+        active_regex_pattern = st.session_state.regex_pattern_input.strip() or None
+        if active_regex_pattern:
+            try:
+                re.compile(active_regex_pattern)
+            except re.error:
+                active_regex_pattern = None
 
         if st.button("Run", type='primary'):
             if st.session_state.get('dcm_info') is None or st.session_state.get('edit_df') is None:
@@ -395,52 +439,66 @@ def streamlit_app():
                     unmatched_set = set(map(str, st.session_state.unmatched_upload_ids))
                     dcm_copy = dcm_copy[~dcm_copy[active_upload_df_id].astype(str).isin(unmatched_set)]
                 subfolder_tag = st.session_state.subfolder_tag
-                dir_df = dcm_copy.filter(like='dir', axis=1)
-                # Include original tag column when subfolder grouping is active (fallback when Update_ is empty)
+                # dcm_info has one row per DICOM file (file_path column, no dedup).
+                # Select only the columns needed for the Run step, then join with edit_df
+                # (one row per PK) on the PK index. Each file row gets the update values
+                # for its PK — no directory-based file discovery, no overlap.
+                dir_cols = ['folder_dir', 'output_dir', 'file_path']
                 if subfolder_tag and subfolder_tag in dcm_copy.columns:
-                    dir_df = dir_df.join(dcm_copy[[subfolder_tag]])
-                anon_dcm_df = dir_df.join(st.session_state.edit_df.filter(like='Update_', axis=1))
+                    dir_cols.append(subfolder_tag)
+                if 'SeriesInstanceUID' in dcm_copy.columns and 'SeriesInstanceUID' not in dir_cols:
+                    dir_cols.append('SeriesInstanceUID')
+                anon_dcm_df = dcm_copy[dir_cols].join(
+                    st.session_state.edit_df.filter(like='Update_', axis=1)
+                )
 
-                pattern = st.session_state.fformat if '*' in st.session_state.fformat else f"*.{st.session_state.fformat.lstrip('.')}"
                 with st.spinner(text='Creating anonymized files...'):
-                    total_files = sum(
-                        len(list(Path(row['folder_dir']).rglob(pattern)))
-                        for _, row in anon_dcm_df.iterrows()
-                    )
+                    base_output = f"{str(Path(folder))}-Anonymized"
+                    total_files = len(anon_dcm_df)
                     processed = 0
                     progress_bar = st.progress(0, text="Initiating anonymization...")
 
-                    base_output = f"{folder}-Anonymized"
-                    series_counters: dict = {}  # subfolder_val → count, used to name series subdirs without PII
+                    # Pre-compute series index per (subfolder_val, SeriesInstanceUID) so
+                    # that files from different series sharing the same subfolder_val are
+                    # written into distinct series_001/, series_002/, … subdirectories.
+                    if subfolder_tag:
+                        from collections import defaultdict
+                        _subfolder_counters: dict = defaultdict(int)
+                        _series_map: dict = {}
+                        for _, _row in anon_dcm_df.iterrows():
+                            _update_col = f'Update_{subfolder_tag}'
+                            _sfval = str(_row.get(_update_col, '') or _row.get(subfolder_tag, '') or 'Unknown').strip() or 'Unknown'
+                            _series_uid = str(_row.get('SeriesInstanceUID', ''))
+                            _key = (_sfval, _series_uid)
+                            if _key not in _series_map:
+                                _subfolder_counters[_sfval] += 1
+                                _series_map[_key] = _subfolder_counters[_sfval]
+
                     for _, row in anon_dcm_df.iterrows():
-                        folder_dir = Path(row['folder_dir'])
+                        file_path = Path(row['file_path'])
                         if subfolder_tag:
                             update_col = f'Update_{subfolder_tag}'
                             subfolder_val = str(row.get(update_col, '') or row.get(subfolder_tag, '') or 'Unknown').strip() or 'Unknown'
-                            # Use a sequential index instead of the original directory name to avoid PII in output paths
-                            series_idx = series_counters.get(subfolder_val, 0) + 1
-                            series_counters[subfolder_val] = series_idx
-                            series_output = str(Path(base_output) / subfolder_val / f"series_{series_idx:03d}")
+                            series_uid = str(row.get('SeriesInstanceUID', ''))
+                            series_idx = _series_map[(subfolder_val, series_uid)]
+                            output_dir = str(Path(base_output) / subfolder_val / f"series_{series_idx:03d}" / file_path.name)
                         else:
-                            series_output = row['output_dir']
-                        for file_dir in folder_dir.rglob(pattern):
-                            output_dir = f"{series_output}/{Path(file_dir).name}"
-                            update = consolidate_tags(row, active_update_tags)
-
-                            logger.get_logger('streamlit').debug(f"Anonymizing {file_dir} -> {output_dir}")
-
-                            anonymize(
-                                file_dir=file_dir,
-                                output_dir=output_dir,
-                                tags=tags_2_anon,
-                                va_type=active_va_types,
-                                update=update,
-                                tags_2_spare=effective_tags_2_spare,
-                                tags_2_create=tags_2_create
-                            )
-
-                            processed += 1
-                            progress_bar.progress(processed / total_files, text=f"Anonymizing: {file_dir}")
+                            output_dir = f"{row['output_dir']}/{file_path.name}"
+                        update = consolidate_tags(row, active_update_tags)
+                        logger.get_logger('streamlit').debug(f"Anonymizing {file_path} -> {output_dir}")
+                        anonymize(
+                            file_dir=file_path,
+                            output_dir=output_dir,
+                            tags=tags_2_anon,
+                            va_type=active_va_types,
+                            update=update,
+                            tags_2_spare=effective_tags_2_spare,
+                            tags_2_create=tags_2_create,
+                            extra_tags_2_anon=effective_extra_tags_2_anon or None,
+                            regex_pattern=active_regex_pattern,
+                        )
+                        processed += 1
+                        progress_bar.progress(processed / total_files, text=f"Anonymizing: {file_path}")
 
                     progress_bar.progress(1.0, text="Anonymization complete")
 

@@ -1,3 +1,3 @@
-# Usage
+# Introduction
 
-This is a `streamlit` based UI for checking segmentation.
+This is a collection of streamlit projects that were written for medical imaging processing. Currently 

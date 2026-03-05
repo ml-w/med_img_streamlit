@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import click
 import streamlit.web.bootstrap
 from streamlit import logger
 from rich.logging import RichHandler
@@ -49,34 +50,36 @@ if _running_in_streamlit():
     from user_interface import streamlit_app  # type: ignore[import]
     streamlit_app()
 
-elif __name__ == "__main__":
-    import click
 
-    @click.command()
-    @click.option("--port", default=8501, show_default=True, help="Server port.")
-    @click.option(
-        "--log-level", "log_level", default="DEBUG", show_default=True,
-        type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
-        help="Logging level.",
+@click.command()
+@click.option("--port", default=8501, show_default=True, help="Server port.")
+@click.option(
+    "--log-level", "log_level", default="DEBUG", show_default=True,
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
+    help="Logging level.",
+)
+def main(port: int, log_level: str) -> None:
+    """Launch the DICOM Anonymizer Streamlit app."""
+    st_logger = logger.get_logger("anonymizer")
+    logger.set_log_level(log_level)
+    st_logger.info("Initiating DicomAnonymizer")
+    st_logger.info(" - log level = {}".format(log_level))
+    st_logger.debug(" - Confirm debug log level")
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+    flag_options = {
+        "server.port": port,
+        "global.developmentMode": False,
+    }
+    streamlit.web.bootstrap.load_config_options(flag_options=flag_options)
+    flag_options["_is_running_with_streamlit"] = True
+    streamlit.web.bootstrap.run(
+        "./application/DicomAnonymizer.py",
+        False,
+        [],
+        flag_options,
     )
-    def main(port: int, log_level: str) -> None:
-        """Launch the DICOM Anonymizer Streamlit app."""
-        st_logger = logger.get_logger("anonymizer")
-        st_logger.info("Initiating DicomAnonymizer")
-        logger.set_log_level(log_level)
-        os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-        flag_options = {
-            "server.port": port,
-            "global.developmentMode": False,
-        }
-        streamlit.web.bootstrap.load_config_options(flag_options=flag_options)
-        flag_options["_is_running_with_streamlit"] = True
-        streamlit.web.bootstrap.run(
-            "./application/DicomAnonymizer.py",
-            False,
-            [],
-            flag_options,
-        )
 
+if __name__ == "__main__":
     main()
