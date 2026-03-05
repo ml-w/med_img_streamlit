@@ -210,7 +210,6 @@ def remove_info(dataset: Dataset,
     Returns:
         None: The function modifies the data element in place and does not return a value.
     """
-    va_type=["PN", "LO", "SH", "AE", "DT", "DA"]
     # Spare sequence name
     if data_element.tag in tags_2_spare:
         return
@@ -231,10 +230,11 @@ def remove_info(dataset: Dataset,
         if data_element.tag in list(update.keys()):
             data_element.value = update[data_element.tag]
             
-def anonymize(file_dir: str, 
-              output_dir: str, 
-              tags: Optional[list] = None, 
-              update: Optional[dict] = None, 
+def anonymize(file_dir: str,
+              output_dir: str,
+              tags: Optional[list] = None,
+              va_type: Optional[list] = None,
+              update: Optional[dict] = None,
               tags_2_spare: Optional[dict] = None,
               tags_2_create: Optional[dict] = None):
     """
@@ -259,6 +259,7 @@ def anonymize(file_dir: str,
         file_dir (str): The path to the input DICOM file.
         output_dir (str): The path where the modified DICOM file will be saved.
         tags (list of tuples, optional): A list of DICOM tags to be anonymized. If None, default tags for sensitive patient information are used.
+        va_type (list of str, optional): VR types whose values are replaced with "Anonymized". If None, defaults to ["PN", "LO", "SH", "AE", "DT", "DA"].
         update (dict, optional): A dictionary of tags and their new values for updates.
         tags_2_spare (list, optional): Tags that should not be modified.
         tags_2_create (list, optional): Tags to be created.
@@ -266,6 +267,9 @@ def anonymize(file_dir: str,
     Returns:
         int: Returns 0 upon successful processing.
     """
+    # Default VR types to anonymize
+    if va_type is None:
+        va_type = ["PN", "LO", "SH", "AE", "DT", "DA"]
     # Default tags to remove for anonymization
     if tags is None:
         tags = [
@@ -294,7 +298,7 @@ def anonymize(file_dir: str,
         
         # Remove and update tags
         f.remove_private_tags()
-        f.walk(lambda x1, x2: remove_info(x1, x2, tags=tags, va_type=[], update=update, tags_2_spare=tags_2_spare))
+        f.walk(lambda x1, x2: remove_info(x1, x2, tags=tags, va_type=va_type, update=update, tags_2_spare=tags_2_spare))
         
         # Create new tags
         for dcm_tag, value in tags_2_create.items():

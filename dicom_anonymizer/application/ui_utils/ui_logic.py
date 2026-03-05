@@ -85,12 +85,6 @@ def validate_upload(edit_df: pd.DataFrame, upload_df: pd.DataFrame, update_tags:
     if upload_df_id in update_tags and f'Update_{upload_df_id}' not in upload_df:
         return f':warning: Error in uploaded file: **Column "Update_{upload_df_id}"** must be contained.'
     
-    # Error checking of unmatched PatientIDs
-    unmatched_ids = check_unmatched_rows(upload_df, edit_df, upload_df_id)
-    if unmatched_ids:
-        unmatched_ids_str = ', '.join(map(str, unmatched_ids))
-        return f':warning: Error in uploaded file: The following **{upload_df_id}** have no matches in the uploaded file - :blue[{unmatched_ids_str}].'
-
     return None  # No errors found
 
 

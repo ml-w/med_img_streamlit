@@ -1,11 +1,40 @@
 import re
-# Inititalize pre-defined values
-# DICOM tags: used as Unique identifiers (list)
-unique_ids = [
-    'PatientName', 
-    'PatientID', 
-    'AccessionNumber'
+
+# DICOM VR types available for user selection; values replace tag contents with "Anonymized"
+# Keys = VR code, values = human-readable description shown in the UI
+vr_type_options = {
+    'PN': 'Person Name — patient/physician names',
+    'LO': 'Long String — IDs, institution names, descriptions',
+    'SH': 'Short String — short identifiers and codes',
+    'AE': 'Application Entity — device/workstation names',
+    'DA': 'Date',
+    'DT': 'Date Time',
+    'TM': 'Time',
+    'AS': 'Age String — patient age',
+    'CS': 'Code String — coded values (may carry institution codes)',
+    'LT': 'Long Text — free-text fields',
+    'ST': 'Short Text — short free-text fields',
+    'UT': 'Unlimited Text — large free-text fields',
+}
+
+# VR types selected by default (matches historical hardcoded behaviour)
+vr_type_defaults = ['PN', 'LO', 'SH', 'AE', 'DA', 'DT']
+
+# Tags scanned during fetch; user picks from these to form the PK
+pk_tag_options = [
+    'PatientID',
+    'AccessionNumber',
+    'PatientName',
+    'StudyInstanceUID',
+    'SeriesInstanceUID',
+    'Modality',
+    'StudyDate',
+    'SeriesNumber',
+    'StudyID',
 ]
+
+# Default PK columns pre-selected in the PK builder
+pk_default = ['PatientID', 'SeriesInstanceUID']
 
 # DICOM tags: available to be shown in template for user's reference (list)
 ref_tag_options = [
@@ -14,35 +43,22 @@ ref_tag_options = [
     'PatientAge',
     'StudyDate',
     'StudyTime',
-    'BodyPartExamined'
+    'BodyPartExamined',
+    'SeriesInstanceUID',
 ]
 
 # DICOM tags: available to be anonymized with default values or user's inputs (dict)
 update_tag_defaults = {
     'PatientName':      '',                                     # for user's inputs
     'PatientID':        '',                                     # for user's inputs
+    'AccessionNumber':  '',                                     # for user's inputs
     'BodyPartExamined': ''
     # 'InstitutionName':  '',                                     # for user's inputs
     # 'PatientBirthDate': '19700101',                             # reset patient's birth date to 0
-    # 'AccessionNumber':  lambda x: re.sub(r'^[a-zA-Z]+', '', x)  # remove the first 3 characters
 }
 
 # DICOM tag: used as identifier in user-uploaded file (str)
 upload_df_id = 'AccessionNumber'
-series_upload_df_id = 'SeriesInstanceUID'
-
-# Series level configuration
-# DICOM tags: used as Unique identifiers when anonymizing per series (list)
-series_unique_ids = [
-    'PatientID',
-    'SeriesInstanceUID'
-]
-
-# DICOM tags: available to be shown in template for user's reference at series level (list)
-series_ref_tag_options = ref_tag_options + ['SeriesInstanceUID']
-
-# DICOM tags: available to be anonymized default values or user's inputs at series level (dict)
-series_update_tag_defaults = update_tag_defaults | {}
 
 # DICOM tags: to be Anonymized as empty string (None-default or list)
 # >> Example: tags_2_anon = [(0x0010, 0x0010), (0x0010, 0x0020)]
