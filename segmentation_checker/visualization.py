@@ -52,7 +52,31 @@ def make_grid(array, nrows=None, ncols=None, padding=2, normalize=False):
     return grid
 
 
-def draw_contour(grayscale_image, labeled_segmentation, width=1):
+LABEL_COLORMAP = [ # This follows itk-snap convention
+    (0, 0, 0),        # Black for label 0 (background)
+    (255, 0, 0),      # Red for label 1
+    (0, 255, 0),      # Green for label 2
+    (0, 0, 255),      # Blue for label 3
+    (255, 255, 0),    # Cyan for label 4
+    (255, 0, 255),    # Magenta for label 5
+    (0, 255, 255),    # Yellow for label 6
+    (128, 0, 0),      # Dark Red for label 7
+    (0, 128, 0),      # Dark Green for label 8
+    (0, 0, 128),      # Dark Blue for label 9
+    (128, 128, 0),    # Olive for label 10
+    (128, 0, 128),    # Purple for label 11
+    (0, 128, 128),    # Teal for label 12
+    (192, 192, 192),  # Light Grey for label 13
+    (128, 128, 128),  # Grey for label 14
+    (255, 165, 0),    # Orange for label 15
+    (255, 20, 147),   # Deep Pink for label 16
+    (135, 206, 235),  # Sky Blue for label 17
+    (255, 105, 180),  # Hot Pink for label 18
+    (75, 0, 130),     # Indigo for label 19
+]
+
+
+def draw_contour(grayscale_image, labeled_segmentation, width=1, alpha=1.0):
     """
     Draw contours from a labeled segmentation image onto a grayscale image using a qualitative color map.
 
@@ -60,61 +84,40 @@ def draw_contour(grayscale_image, labeled_segmentation, width=1):
         grayscale_image (np.ndarray): The grayscale image (H x W).
         labeled_segmentation (np.ndarray): The labeled segmentation image (H x W).
         width (int): The width of the contour lines.
+        alpha (float): Opacity of contour overlay, 0.0 (transparent) to 1.0 (opaque).
 
     Returns:
         np.ndarray: The grayscale image with the contour overlay.
     """
-    # Ensure labeled_segmentation is of type np.uint8
     if labeled_segmentation.dtype != np.uint8:
         labeled_segmentation = labeled_segmentation.astype(np.uint8)
 
-    # Convert grayscale image to BGR for contour drawing
-    contour_image = cv2.cvtColor(grayscale_image, cv2.COLOR_GRAY2BGR)
+    base_image = cv2.cvtColor(grayscale_image, cv2.COLOR_GRAY2BGR)
+    result = base_image.copy()
 
-    # Find unique labels (excluding background)
     unique_labels = np.unique(labeled_segmentation)
-    unique_labels = unique_labels[unique_labels != 0]  # Exclude background (0)
+    unique_labels = unique_labels[unique_labels != 0]
 
-    # Generate a colormap
-    colormap = [
-        (0, 0, 0),        # Black for label 0 (background)
-        (255, 0, 0),      # Red for label 1
-        (0, 255, 0),      # Green for label 2
-        (0, 0, 255),      # Blue for label 3
-        (255, 255, 0),    # Cyan for label 4
-        (255, 0, 255),    # Magenta for label 5
-        (0, 255, 255),    # Yellow for label 6
-        (128, 0, 0),      # Dark Red for label 7
-        (0, 128, 0),      # Dark Green for label 8
-        (0, 0, 128),      # Dark Blue for label 9
-        (128, 128, 0),    # Olive for label 10
-        (128, 0, 128),    # Purple for label 11
-        (0, 128, 128),    # Teal for label 12
-        (192, 192, 192),  # Light Grey for label 13
-        (128, 128, 128),  # Grey for label 14
-        (255, 165, 0),    # Orange for label 15
-        (255, 20, 147),   # Deep Pink for label 16
-        (135, 206, 235),  # Sky Blue for label 17
-        (255, 105, 180),  # Hot Pink for label 18
-        (75, 0, 130)     # Indigo for label 19
-    ]
-    colormap = {i: colormap[i] for i in np.arange(len(colormap))}
+    colormap = {i: c for i, c in enumerate(LABEL_COLORMAP)}
 
     for label in unique_labels:
-        # Create a binary mask for the current label
         mask = (labeled_segmentation == label).astype(np.uint8)
-
-        # Find contours for the current label
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        color = colormap[label % len(LABEL_COLORMAP)]
+        overlay = result.copy()
+        cv2.drawContours(overlay, contours, -1, color, width, lineType=cv2.LINE_AA)
+        result = cv2.addWeighted(overlay, alpha, result, 1.0 - alpha, 0)
 
-        # Use the colormap to get the color for the current label
-        color_index = label % 20  # Use modulo to fit within the color range
-        color = colormap[color_index]  # Get BGR color from colormap
+    return result
 
-        # Draw contours in the specified color
-        cv2.drawContours(contour_image, contours, -1, color, width)
 
-    return contour_image
+def rescale_intensity_3d(volume, lower=25, upper=99):
+    """Rescale a 3D volume's intensity using global percentiles, returning uint8."""
+    lo, hi = np.percentile(volume, [lower, upper])
+    if lo == hi:
+        raise ValueError("Min point and Max point are the same")
+    rescaled = np.clip((volume - lo) / (hi - lo) * 255, 0, 255)
+    return rescaled.astype(np.uint8)
 
 
 def rescale_intensity(image, lower=25, upper=99):

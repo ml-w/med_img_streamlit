@@ -1,0 +1,17 @@
+[project]
+name = "segmentation-checker"
+version = "1.0.0"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.29.0",
+    "simpleitk",
+    "numpy",
+    "pandas",
+    "plotly",
+    "opencv-python>=4.6.0",
+    "rich",
+    "mri-normalization-tools",
+]
+
+[tool.uv.sources]
+mri-normalization-tools = { git = "https://github.com/alabamagan/mri_normalization_tools" }

@@ -7,7 +7,9 @@ import SimpleITK as sitk
 import numpy as np
 import pandas as pd
 
+import cv2
 from visualization import *
+from analysis import compute_label_statistics
 from pathlib import Path
 from mnts.utils import get_fnames_by_IDs, get_unique_IDs
 
@@ -287,13 +289,18 @@ if selected_pair:
     with st.container(height=700):
         image_slot = st.empty()
     
-    # Sliders for window levels
+    # Sliders for window levels and contour options
     lower, upper = st.slider(
             'Window Levels',
             min_value=0,
             max_value=99,
             value=(25, 99)
         )
+    col_cw, col_ca = st.columns(2)
+    with col_cw:
+        contour_width = st.slider('Contour Width', min_value=1, max_value=10, value=2)
+    with col_ca:
+        contour_alpha = st.slider('Contour Alpha', min_value=0.0, max_value=1.0, value=1.0, step=0.05)
 
     
     with st.spinner("Running"):
@@ -319,23 +326,42 @@ if selected_pair:
             st.warning("The segmentation seems to be empty")
             logger.error(e, exc_info=True)
 
+        # Compute per-label signal intensity statistics (before numpy conversion)
+        intensity_stats = compute_label_statistics(mri_image, seg_image)
+
         mri_image = sitk.GetArrayFromImage(mri_image)
         seg_image = sitk.GetArrayFromImage(seg_image)
 
-        # Rescale
+        # Rescale on 3D volume first (avoids padding zeros in percentile calc), then grid
         ncols = 5
-        mri_image = rescale_intensity(make_grid(mri_image, ncols=ncols), 
-                                      lower = lower, 
-                                      upper = upper)
+        mri_image = rescale_intensity_3d(mri_image, lower=lower, upper=upper)
+        mri_image = make_grid(mri_image, ncols=ncols)
         seg_image = make_grid(seg_image, ncols=ncols).astype('int')
 
+        # Upscale grids to display resolution before drawing contours so lines stay crisp
+        display_width = 2800
+        scale = display_width / mri_image.shape[1]
+        target_size = (display_width, int(mri_image.shape[0] * scale))
+        mri_image = cv2.resize(mri_image, target_size, interpolation=cv2.INTER_CUBIC)
+        seg_image = cv2.resize(seg_image.astype(np.uint8), target_size, interpolation=cv2.INTER_NEAREST).astype(int)
+
         try:
-            mri_image = draw_contour(mri_image, seg_image, width=2)
+            mri_image = draw_contour(mri_image, seg_image, width=contour_width, alpha=contour_alpha)
         except ValueError:
             st.warning("Something wrong with the segmetnation.")
 
         # Display images
         image_slot.image(mri_image, use_column_width=True)
+
+    # Signal intensity statistics per segmentation label
+    if not intensity_stats.empty:
+        with st.expander("Signal Intensity Statistics", expanded=False):
+            def _style_label_col(val):
+                r, g, b = LABEL_COLORMAP[int(val) % len(LABEL_COLORMAP)]
+                text = "white" if (r * 0.299 + g * 0.587 + b * 0.114) < 150 else "black"
+                return f"background-color: rgb({r},{g},{b}); color: {text}"
+            styled = intensity_stats.style.map(_style_label_col, subset=["Label"])
+            st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # Button to go back one option
     col1, col2, col3 = st.columns([1, 1, 3])
