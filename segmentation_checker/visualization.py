@@ -93,20 +93,27 @@ def draw_contour(grayscale_image, labeled_segmentation, width=1, alpha=1.0):
         labeled_segmentation = labeled_segmentation.astype(np.uint8)
 
     base_image = cv2.cvtColor(grayscale_image, cv2.COLOR_GRAY2BGR)
-    result = base_image.copy()
+    overlay = base_image.copy()
+    contour_any = np.zeros(labeled_segmentation.shape[:2], dtype=bool)
 
     unique_labels = np.unique(labeled_segmentation)
     unique_labels = unique_labels[unique_labels != 0]
 
     colormap = {i: c for i, c in enumerate(LABEL_COLORMAP)}
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * width + 1, 2 * width + 1))
 
     for label in unique_labels:
         mask = (labeled_segmentation == label).astype(np.uint8)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        color = colormap[label % len(LABEL_COLORMAP)]
-        overlay = result.copy()
-        cv2.drawContours(overlay, contours, -1, color, width, lineType=cv2.LINE_AA)
-        result = cv2.addWeighted(overlay, alpha, result, 1.0 - alpha, 0)
+        eroded = cv2.erode(mask, kernel, iterations=1)
+        band = (mask - eroded).astype(bool)
+        overlay[band] = colormap[label % len(LABEL_COLORMAP)]
+        contour_any |= band
+
+    # Single alpha blend — only where contours exist
+    result = base_image.copy()
+    result[contour_any] = cv2.addWeighted(
+        overlay, alpha, base_image, 1.0 - alpha, 0
+    )[contour_any]
 
     return result
 
