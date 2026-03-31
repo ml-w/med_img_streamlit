@@ -3,7 +3,7 @@ name = "segmentation-checker"
 version = "1.0.0"
 requires-python = ">=3.10"
 dependencies = [
-    "streamlit>=1.29.0",
+    "streamlit>=1.55.0",
     "simpleitk",
     "numpy",
     "pandas",

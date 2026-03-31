@@ -171,7 +171,7 @@ with st.expander("Directory Setup", expanded=st.session_state.get("require_setup
     
     col1, _ = st.columns([1, 3])
     with col1:
-        if st.button("Reload Dataframe", use_container_width=True, key="btn_reload_dataframe"):
+        if st.button("Reload Dataframe", width='stretch', key="btn_reload_dataframe"):
             df = load_dataframe(st.session_state.frame_path)
             if df is not None:
                 st.session_state.dataframe = df
@@ -285,7 +285,7 @@ if selected_pair:
             contour_width = st.slider('Contour Width', min_value=1, max_value=10, value=2)
         with col_ca:
             contour_alpha = st.slider('Contour Alpha', min_value=0.0, max_value=1.0, value=1.0, step=0.05)
-        st.form_submit_button("Apply", type="primary", use_container_width=False)
+        st.form_submit_button("Apply", type="primary", width='content')
 
     
     intensity_stats = pd.DataFrame()  # safe default if rendering fails
@@ -309,7 +309,7 @@ if selected_pair:
         for msg in warning_messages:
             st.warning(msg)
         if rendered_image is not None:
-            image_slot.image(rendered_image, use_container_width=True, output_format="PNG")
+            image_slot.image(rendered_image, width='stretch', output_format="PNG")
         else:
             st.error("Rendering failed — see warnings above.")
 
@@ -322,26 +322,26 @@ if selected_pair:
                 text = "white" if (r * 0.299 + g * 0.587 + b * 0.114) < 150 else "black"
                 return f"background-color: rgb({r},{g},{b}); color: {text}"
             styled = intensity_stats.style.map(_style_label_col, subset=["Label"])
-            st.dataframe(styled, use_container_width=True, hide_index=True)
+            st.dataframe(styled, width='stretch', hide_index=True)
 
     # * Action buttons
     # Button to go back one option
     with st.container(border=True, key="action_buttons_container"):
         col1, col2, col3, col4 = st.columns([1, 1, 2, 2])
         with col1:
-            if st.button('Go back', use_container_width=True, icon="⬅️", disabled=selected_index==0):
+            if st.button('Go back', width='stretch', icon="⬅️", disabled=selected_index==0):
                 current_index = selected_index
                 previous_index = (current_index - 1) % len(intersection)
                 st.session_state.selection_index = previous_index
                 st.rerun()
                 # Button to clear the current record
-            if st.button("Clear Current Record", use_container_width=True, icon="↩️"):
+            if st.button("Clear Current Record", width='stretch', icon="↩️"):
                 st.session_state.dataframe = st.session_state.dataframe[st.session_state.dataframe["PairID"] != selected_pair]
                 st.rerun()
         
         # Button to load the next option
         with col2:
-            if st.button('Checked and Next', use_container_width=True, icon="➡️"):
+            if st.button('Checked and Next', width='stretch', icon="➡️"):
                 current_index = selected_index
                 st.session_state.dataframe = update_dataframe(st.session_state.dataframe, intersection[current_index])
                 next_index = (current_index + 1) % len(intersection)
@@ -352,7 +352,7 @@ if selected_pair:
                         next_index += 1
                 st.session_state.selection_index = next_index
                 st.rerun()
-            if st.button('➡️ Mark as need fix)', use_container_width=True):
+            if st.button('➡️ Mark as need fix)', width='stretch'):
                 current_index = selected_index
                 st.session_state.dataframe = update_dataframe(st.session_state.dataframe, intersection[current_index], True)
                 next_index = (current_index + 1) % len(intersection)
@@ -386,7 +386,7 @@ if selected_pair:
 
         with col4:
             # Example button to save the DataFrame
-            if st.button('Save DataFrame', icon="💾", use_container_width=True):
+            if st.button('Save DataFrame', icon="💾", width='stretch'):
                 save_dataframe(st.session_state.dataframe, st.session_state.frame_path)
                 st.success("DataFrame saved!")
 
@@ -398,7 +398,7 @@ if selected_pair:
                 mime='text/csv', 
                 disabled='dataframe' not in st.session_state or st.session_state.dataframe.empty, 
                 icon="📥", 
-                use_container_width=True
+                width='stretch'
             )
 
         # Progress of checking the segmentation
@@ -408,8 +408,8 @@ if selected_pair:
             st.success("You've viewed all the cases!")
 
         # Show dataframe
-        with st.popover("Data Overview", use_container_width=True):
-            st.dataframe(st.session_state.dataframe, use_container_width=True)
+        with st.popover("Data Overview", width='stretch'):
+            st.dataframe(st.session_state.dataframe, width='stretch')
 
             # Show statistics
             # Count the occurrences of each value in the 'NeedFix' column
