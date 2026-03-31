@@ -105,13 +105,16 @@ ref_tag_options = [
 ]
 
 # DICOM tags: available to be anonymized with default values or user's inputs (dict)
+default_update_tags = ['PatientName', 'PatientID', 'AccessionNumber']
 update_tag_defaults = {
     'PatientName':      '',                                     # for user's inputs
     'PatientID':        '',                                     # for user's inputs
     'AccessionNumber':  '',                                     # for user's inputs
     'BodyPartExamined': '',
-    'InstitutionName':  'Anonymized'                                     # for user's inputs
-    # 'PatientBirthDate': '19700101',                             # reset patient's birth date to 0
+    'InstitutionName':  'Anonymized',                           # for user's inputs
+    'PatientAge':       '000Y',                                 # reset patient age to 0 years
+    'PatientBirthDate': '19700101',                             # reset patient's birth date to 0
+    'PatientSex':       'O',
 }
 
 # DICOM tag: used as identifier in user-uploaded file (str)

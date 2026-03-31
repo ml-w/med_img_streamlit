@@ -19,7 +19,7 @@ def create_update_cols(udf: pd.DataFrame, update_tags: dict) -> pd.DataFrame:
     return udf
             
 
-def update_data_editor(edit_df: pd.DataFrame, upload_df: pd.DataFrame, update_tags: dict, unique_ids: list) -> pd.DataFrame:
+def update_data_editor(edit_df: pd.DataFrame, upload_df: pd.DataFrame, update_tags: dict, upload_df_id: str) -> pd.DataFrame:
     """
     Updates the specified columns in an existing DataFrame (edit_df) with values from an uploaded DataFrame (upload_df).
 
@@ -27,13 +27,13 @@ def update_data_editor(edit_df: pd.DataFrame, upload_df: pd.DataFrame, update_ta
         edit_df (pd.DataFrame): DataFrame containing the original data to be updated.
         upload_df (pd.DataFrame): DataFrame with new values to apply to matching rows.
         update_tags (dict): Column tags to update in the edit_df.
-        unique_ids (list): Columns used to identify matching rows.
+        upload_df_id (str): Column used to identify matching rows.
 
     Returns:
         pd.DataFrame: The modified edit_df with updated values where matches were found.
     """
     for _, row_udf in upload_df.iterrows():
-        mask = edit_df[unique_ids].eq(row_udf[unique_ids]).all(axis=1)
+        mask = edit_df[upload_df_id] == row_udf[upload_df_id]
         matching_row = edit_df[mask]
 
         if not matching_row.empty:

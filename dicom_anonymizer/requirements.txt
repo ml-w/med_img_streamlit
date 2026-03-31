@@ -1,7 +1,7 @@
 # Core dependencies
 pandas>=2.2.3
 pydicom>=3.0.1
-streamlit>=1.29.0
+streamlit>=1.37.0
 
 # Testing dependencies
 pytest>=7.0.0

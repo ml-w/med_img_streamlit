@@ -3,20 +3,20 @@ import pydicom
 from pydicom.errors import InvalidDicomError
 from pydicom import *
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from pydicom.tag import Tag
 import pandas as pd
 import streamlit
 from streamlit import logger
 import functools
 
-def create_output_dir(file_dir: str, folder_dir: Path) -> str:
+def create_output_dir(file_dir: str | Path, folder_dir: Path) -> str:
     """
     Generates the output directory path for anonymized files.
     
     Args: 
-        file_dir (str): The DICOM file path. 
-        folder_dir (str): The folder directory of the DICOM file. 
+        file_dir (str | Path): The DICOM file path. 
+        folder_dir (Path): The folder directory of the DICOM file. 
     
     Returns:
         str: A string which represents the output file path. 
@@ -30,7 +30,7 @@ def create_dcm_df(
     ref_tags: list,
     new_tags: list,
     series_mode: bool = False,
-    progress_bar: 'ProgressMixin' = None
+    progress_bar: Any = None
 ) -> pd.DataFrame:
     """
     Gathers the meta data of each DICOM file from the folder. 
@@ -184,7 +184,8 @@ def consolidate_tags(row: pd.Series, update_tags: dict) -> dict:
         'InstitutionName':          Tag((0x0008, 0x0080)),
         'StudyDate':                Tag((0x0008, 0x0020)),
         'StudyTime':                Tag((0x0008, 0x0031)),
-        'BodyPartExamined':         Tag((0x0018, 0x0015))
+        'BodyPartExamined':         Tag((0x0018, 0x0015)), 
+        'PatientAge':               Tag((0x0010, 0x1010)),
     }
     
     update = {}

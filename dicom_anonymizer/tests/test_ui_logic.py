@@ -51,7 +51,7 @@ def test_update_data_editor():
         "Update_PatientID": ["99"],
     })
 
-    result = update_data_editor(edit_df, upload_df, update_tags, ["PatientID"])
+    result = update_data_editor(edit_df, upload_df, update_tags, "PatientID")
     row1 = result[result["PatientID"] == "1"].iloc[0]
     row2 = result[result["PatientID"] == "2"].iloc[0]
     assert row1["Update_PatientName"] == "ANN"
@@ -66,7 +66,7 @@ def test_update_data_editor_no_match():
     edit_df = create_update_cols(edit_df, update_tags)
 
     upload_df = pd.DataFrame({"PatientID": ["99"], "Update_PatientName": ["X"]})
-    result = update_data_editor(edit_df, upload_df, update_tags, ["PatientID"])
+    result = update_data_editor(edit_df, upload_df, update_tags, "PatientID")
     assert result["Update_PatientName"].tolist() == ["", ""]
 
 

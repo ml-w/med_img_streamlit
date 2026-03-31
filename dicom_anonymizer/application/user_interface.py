@@ -21,6 +21,7 @@ from app_settings.config import (
     new_tags,
     vr_type_options,
     vr_type_defaults,
+    default_update_tags
 )
 
 # ---------------------------------------------------------------------------
@@ -79,6 +80,7 @@ def streamlit_app():
         "skip_unmatched": False,
         "unmatched_upload_ids": [],
         "subfolder_tag": "",
+        "output_folder": "",
     }
     # Per-VR checkbox defaults (only applied once; session/JSON takes over after first run)
     for vr in vr_type_options:
@@ -207,16 +209,22 @@ def streamlit_app():
             st.info('Select at least one PK column to preview.')
 
         if st.button('Confirm PK', type='primary', disabled=not bool(pk_columns)):
-            # Reset to RangeIndex (safe whether current index is RangeIndex or a prior PK),
-            # then build the user-chosen PK string and set as index.
+            # Reset to RangeIndex, then build the combined PK column.
+            # For a single-column PK the existing column is used directly.
+            # For multi-column PKs a new column named 'ColA__ColB__...' is added
+            # whose values are the row values joined with '__'; this column becomes
+            # the matcher for the rest of the session.
             dcm = st.session_state.dcm_info.reset_index(drop=True).copy()
-            dcm['PK'] = dcm[pk_columns].astype(str).agg('_'.join, axis=1)
+            if len(pk_columns) == 1:
+                pk_col_name = pk_columns[0]
+            else:
+                pk_col_name = '__'.join(pk_columns)
+                dcm[pk_col_name] = dcm[pk_columns].astype(str).agg('__'.join, axis=1)
+            dcm['PK'] = dcm[pk_col_name].astype(str)
             dcm = dcm.set_index('PK')
-            # dcm may have multiple rows per PK (e.g. patient-level PK covering many series)
             st.session_state.dcm_info = dcm
             st.session_state.pk_committed = True
-            # Default matcher to the last PK column (most specific identifier)
-            st.session_state.matcher_id = pk_columns[-1]
+            st.session_state.matcher_id = pk_col_name
             st.session_state.selected_display_tags = []
             st.session_state.selected_update_tags = []
             st.rerun()
@@ -225,30 +233,29 @@ def streamlit_app():
     if st.session_state.dcm_info is not None and st.session_state.pk_committed:
         active_unique_ids = st.session_state.pk_columns
         active_upload_df_id = st.session_state.matcher_id
-
-        options = [col for col in active_unique_ids if col in st.session_state.dcm_info.columns]
-        st.selectbox(
-            'Select matcher column',
-            options,
-            index=options.index(st.session_state.matcher_id) if st.session_state.matcher_id in options else 0,
-            key='matcher_id'
-        )
-        active_upload_df_id = st.session_state.matcher_id
+        st.divider()
+        st.subheader("Step 3: Upload the anonymization scheme")
+        st.caption(f'Matcher column (locked): **`{active_upload_df_id}`**')
         if st.session_state.dcm_info[active_upload_df_id].isnull().any():
             st.warning(':warning: Some DICOM files are missing the selected matcher column.')
 
         if not st.session_state.selected_display_tags:
             st.session_state.selected_display_tags = ref_tag_options
         if not st.session_state.selected_update_tags:
-            st.session_state.selected_update_tags = list(update_tag_defaults.keys())
+            st.session_state.selected_update_tags = default_update_tags
+            
+        @st.fragment
+        def _column_selection():
+            st.multiselect('Select columns to display', ref_tag_options, key='selected_display_tags')
+            st.multiselect('Select columns to update', list(update_tag_defaults.keys()), key='selected_update_tags')
 
-        st.multiselect('Select columns to display', ref_tag_options, key='selected_display_tags')
-        st.multiselect('Select columns to update', list(update_tag_defaults.keys()), key='selected_update_tags')
+        _column_selection()
 
         active_ref_tags = st.session_state.selected_display_tags
         active_update_tags = {k: update_tag_defaults[k] for k in st.session_state.selected_update_tags}
 
-        display_cols = list(dict.fromkeys(active_unique_ids + active_ref_tags + list(active_update_tags.keys())))
+        # Ensure the matcher column is always included so it appears in edit_df and the CSV template.
+        display_cols = list(dict.fromkeys([active_upload_df_id] + active_unique_ids + active_ref_tags + list(active_update_tags.keys())))
         display_cols = [c for c in display_cols if c in st.session_state.dcm_info.columns]
         uids_df = st.session_state.dcm_info[display_cols]
         # edit_df: one row per PK (deduped), PK index preserved for the Run-step join
@@ -298,7 +305,7 @@ def streamlit_app():
                 else:
                     upload_df = upload_df.fillna('').astype(str)
                     try:
-                        edit_df = update_data_editor(st.session_state.edit_df, upload_df, active_update_tags, active_unique_ids)
+                        edit_df = update_data_editor(st.session_state.edit_df, upload_df, active_update_tags, active_upload_df_id)
                         st.session_state.edit_df = edit_df
                         unmatched = check_unmatched_rows(upload_df, edit_df, active_upload_df_id)
                         st.session_state.unmatched_upload_ids = unmatched
@@ -345,76 +352,85 @@ def streamlit_app():
 
         # ─── Anonymization settings (collapsed) ──────────────────────────────────
         with st.expander(':gear: **Anonymization settings**', expanded=False):
-            st.checkbox(
-                'Skip unmatched cases — exclude cases not found in uploaded file from the output entirely',
-                key='skip_unmatched',
-                help='When enabled, any case whose matcher ID is absent from the uploaded CSV will not be anonymized or copied to the output directory.',
-            )
-            st.divider()
-            subfolder_options = [''] + [c for c in active_unique_ids if c in st.session_state.dcm_info.columns]
-            st.selectbox(
-                'Organize output into subfolders by tag',
-                options=subfolder_options,
-                format_func=lambda x: '(mirror original directory structure)' if x == '' else x,
-                key='subfolder_tag',
-                help='When set, the anonymized value of the chosen tag is used as a top-level subfolder under the output root, '
-                     'replacing the original directory structure. Use an Update_ tag value to avoid PII in output paths.',
-            )
-            st.divider()
-            st.caption('**VR types to anonymize** — all data elements with these Value Representations '
-                       'will have their value replaced with "Anonymized".')
-            col1, col2 = st.columns(2)
-            for i, (vr, desc) in enumerate(vr_type_options.items()):
-                with (col1 if i % 2 == 0 else col2):
-                    st.checkbox(f'`{vr}` — {desc}',
-                                key=f'vr_{vr}')
+            with st.form('Anonymization setting form'):
+                st.checkbox(
+                    'Skip unmatched cases — exclude cases not found in uploaded file from the output entirely',
+                    key='skip_unmatched',
+                    help='When enabled, any case whose matcher ID is absent from the uploaded CSV will not be anonymized or copied to the output directory.',
+                )
+                st.divider()
+                subfolder_options = [''] + [c for c in active_unique_ids if c in st.session_state.dcm_info.columns]
+                st.selectbox(
+                    'Organize output into subfolders by tag',
+                    options=subfolder_options,
+                    format_func=lambda x: '(mirror original directory structure)' if x == '' else x,
+                    key='subfolder_tag',
+                    help='When set, the anonymized value of the chosen tag is used as a top-level subfolder under the output root, '
+                        'replacing the original directory structure. Use an Update_ tag value to avoid PII in output paths.',
+                )
+                st.divider()
+                st.text_input(
+                    'Output folder',
+                    key='output_folder',
+                    placeholder=f'{str(Path(folder))}-Anonymized',
+                    help='Destination folder for anonymized files. Leave blank to use the default: the input folder with "-Anonymized" appended.',
+                )
+                st.divider()
+                st.caption('**VR types to anonymize** — all data elements with these Value Representations '
+                        'will have their value replaced with "Anonymized".')
+                col1, col2 = st.columns(2)
+                for i, (vr, desc) in enumerate(vr_type_options.items()):
+                    with (col1 if i % 2 == 0 else col2):
+                        st.checkbox(f'`{vr}` — {desc}',
+                                    key=f'vr_{vr}')
 
-            st.divider()
-            st.caption('**Additional tags to spare** — values in these tags are never modified, '
-                       'even if their VR type is selected above. '
-                       'Format: `(XXXX|XXXX),(YYYY|YYYY)` using 4-digit hex group and element numbers. '
-                       'Example: `(0008|1030),(0008|103e)`')
-            st.text_input('Tags to spare', key='spare_tags_input',
-                          placeholder='(0008|1030),(0008|103e)')
-            user_spare = _parse_spare_tags(st.session_state.spare_tags_input)
-            if user_spare:
-                st.success(f'Parsed {len(user_spare)} additional spare tag(s): '
-                           + ', '.join(f'({g:04X}|{e:04X})' for g, e in user_spare))
-            elif st.session_state.spare_tags_input.strip():
-                st.warning(':warning: No valid tags found — check the format `(XXXX|XXXX)`.')
+                st.divider()
+                st.caption('**Additional tags to spare** — values in these tags are never modified, '
+                        'even if their VR type is selected above. '
+                        'Format: `(XXXX|XXXX),(YYYY|YYYY)` using 4-digit hex group and element numbers. '
+                        'Example: `(0008|1030),(0008|103e)`')
+                st.text_input('Tags to spare', key='spare_tags_input',
+                            placeholder='(0008|1030),(0008|103e)')
+                user_spare = _parse_spare_tags(st.session_state.spare_tags_input)
+                if user_spare:
+                    st.success(f'Parsed {len(user_spare)} additional spare tag(s): '
+                            + ', '.join(f'({g:04X}|{e:04X})' for g, e in user_spare))
+                elif st.session_state.spare_tags_input.strip():
+                    st.warning(':warning: No valid tags found — check the format `(XXXX|XXXX)`.')
 
-            st.divider()
-            st.caption('**Additional tags to anonymize** — values in these tags are always cleared to an empty string. '
-                       'Same format as tags to spare. Tags to spare take priority if a tag appears in both lists. '
-                       'Example: `(0010|0050),(0010|0090)`')
-            st.text_input('Tags to anonymize', key='anon_tags_input',
-                          placeholder='(0010|0050),(0010|0090)')
-            user_anon = _parse_spare_tags(st.session_state.anon_tags_input)
-            if user_anon:
-                st.success(f'Parsed {len(user_anon)} additional tag(s) to anonymize: '
-                           + ', '.join(f'({g:04X}|{e:04X})' for g, e in user_anon))
-                all_spare = list(tags_2_spare) + user_spare
-                overlap = [t for t in user_anon if t in all_spare]
-                if overlap:
-                    st.warning(
-                        ':warning: The following tag(s) appear in both **tags to spare** and **tags to anonymize** — '
-                        'they will be **spared** (spare takes priority): '
-                        + ', '.join(f'({g:04X}|{e:04X})' for g, e in overlap)
-                    )
-            elif st.session_state.anon_tags_input.strip():
-                st.warning(':warning: No valid tags found — check the format `(XXXX|XXXX)`.')
+                st.divider()
+                st.caption('**Additional tags to anonymize** — values in these tags are always cleared to an empty string. '
+                        'Same format as tags to spare. Tags to spare take priority if a tag appears in both lists. '
+                        'Example: `(0010|0050),(0010|0090)`')
+                st.text_input('Tags to anonymize', key='anon_tags_input',
+                            placeholder='(0010|0050),(0010|0090)')
+                user_anon = _parse_spare_tags(st.session_state.anon_tags_input)
+                if user_anon:
+                    st.success(f'Parsed {len(user_anon)} additional tag(s) to anonymize: '
+                            + ', '.join(f'({g:04X}|{e:04X})' for g, e in user_anon))
+                    all_spare = list(tags_2_spare) + user_spare
+                    overlap = [t for t in user_anon if t in all_spare]
+                    if overlap:
+                        st.warning(
+                            ':warning: The following tag(s) appear in both **tags to spare** and **tags to anonymize** — '
+                            'they will be **spared** (spare takes priority): '
+                            + ', '.join(f'({g:04X}|{e:04X})' for g, e in overlap)
+                        )
+                elif st.session_state.anon_tags_input.strip():
+                    st.warning(':warning: No valid tags found — check the format `(XXXX|XXXX)`.')
 
-            st.divider()
-            st.caption('**Regex match anonymization** — any DICOM string value matching the pattern is replaced with '
-                       '"Anonymized". Only one pattern is supported. Use standard Python regex syntax.')
-            st.text_input('Regex pattern', key='regex_pattern_input',
-                          placeholder=r'e.g., \b\d{3}-\d{2}-\d{4}\b')
-            if st.session_state.regex_pattern_input.strip():
-                try:
-                    re.compile(st.session_state.regex_pattern_input)
-                    st.success(f'Valid regex pattern: `{st.session_state.regex_pattern_input}`')
-                except re.error as exc:
-                    st.error(f':warning: Invalid regex pattern: {exc}')
+                st.divider()
+                st.caption('**Regex match anonymization** — any DICOM string value matching the pattern is replaced with '
+                        '"Anonymized". Only one pattern is supported. Use standard Python regex syntax.')
+                st.text_input('Regex pattern', key='regex_pattern_input',
+                            placeholder=r'e.g., \b\d{3}-\d{2}-\d{4}\b')
+                if st.session_state.regex_pattern_input.strip():
+                    try:
+                        re.compile(st.session_state.regex_pattern_input)
+                        st.success(f'Valid regex pattern: `{st.session_state.regex_pattern_input}`')
+                    except re.error as exc:
+                        st.error(f':warning: Invalid regex pattern: {exc}')
+                st.form_submit_button('Apply')
 
         # Collect active VR types and effective spare/anon tags for the run
         active_va_types = [vr for vr in vr_type_options if st.session_state.get(f'vr_{vr}', vr in vr_type_defaults)]
@@ -453,7 +469,7 @@ def streamlit_app():
                 )
 
                 with st.spinner(text='Creating anonymized files...'):
-                    base_output = f"{str(Path(folder))}-Anonymized"
+                    base_output = st.session_state.output_folder.strip() or f"{str(Path(folder))}-Anonymized"
                     total_files = len(anon_dcm_df)
                     processed = 0
                     progress_bar = st.progress(0, text="Initiating anonymization...")
@@ -504,7 +520,7 @@ def streamlit_app():
 
                 st.write(f"""
                         :star2: Anonymized files are written in:
-                        :open_file_folder: :blue[{folder}-Anonymized]
+                        :open_file_folder: :blue[{base_output}]
                         """)
 
     _save_session()
