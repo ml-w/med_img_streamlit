@@ -185,6 +185,7 @@ save_state(
         'seg_dir': str(st.session_state.get('seg_dir', '')),
         'id_globber': st.session_state.get('id_globber', ''),
         'frame_path': str(st.session_state.get('frame_path', '')),
+        'batch_output_dir': str(st.session_state.get('batch_output_dir', '')),
     },
 )
 
@@ -244,7 +245,8 @@ if not selected_index == st.session_state.selection_index:
 # Use try-except to catch user input that doesn't exist
 try:
     selected_pair = str(intersection[selected_index])
-    st.write(paired[selected_pair])
+    st.write(f"<table><tr><td><b>Image:</b></td><td>{paired[selected_pair][0]}</td></tr>"
+             f"<tr><td><b>Segmentation:</b></td><td>{paired[selected_pair][1]}</td></tr></table>", unsafe_allow_html=True)
 except:
     st.write("Your selected ID does not match with the records.")
     st.stop()
@@ -268,18 +270,22 @@ if selected_pair:
     with st.container(height=700):
         image_slot = st.empty()
     
-    # Sliders for window levels and contour options
-    lower, upper = st.slider(
-            'Window Levels',
-            min_value=0,
-            max_value=99,
-            value=(25, 99)
-        )
-    col_cw, col_ca = st.columns(2)
-    with col_cw:
-        contour_width = st.slider('Contour Width', min_value=1, max_value=10, value=2)
-    with col_ca:
-        contour_alpha = st.slider('Contour Alpha', min_value=0.0, max_value=1.0, value=1.0, step=0.05)
+    # * Configurations
+    with st.form(key="configuration_form", enter_to_submit=False):
+        st.subheader("Display Options")
+        # Sliders for window levels and contour options
+        lower, upper = st.slider(
+                'Window Levels',
+                min_value=0,
+                max_value=99,
+                value=(25, 99)
+            )
+        col_cw, col_ca = st.columns(2)
+        with col_cw:
+            contour_width = st.slider('Contour Width', min_value=1, max_value=10, value=2)
+        with col_ca:
+            contour_alpha = st.slider('Contour Alpha', min_value=0.0, max_value=1.0, value=1.0, step=0.05)
+        st.form_submit_button("Apply", type="primary", use_container_width=False)
 
     
     intensity_stats = pd.DataFrame()  # safe default if rendering fails
@@ -297,19 +303,20 @@ if selected_pair:
         )
         for level, text in metadata_messages:
             if level == 'success':
-                st.success(text)
+                st.toast(text, icon="✅", duration="short")
             else:
                 st.error(text)
         for msg in warning_messages:
             st.warning(msg)
         if rendered_image is not None:
-            image_slot.image(rendered_image, use_column_width=True, output_format="PNG")
+            image_slot.image(rendered_image, use_container_width=True, output_format="PNG")
         else:
             st.error("Rendering failed — see warnings above.")
 
     # Signal intensity statistics per segmentation label
     if not intensity_stats.empty:
         with st.expander("Signal Intensity Statistics", expanded=False):
+            st.write("The table below shows the mean signal intensity for each segmentation label. The background color corresponds to the label color in the image, and the text color is automatically adjusted for readability.")
             def _style_label_col(val):
                 r, g, b = LABEL_COLORMAP[int(val) % len(LABEL_COLORMAP)]
                 text = "white" if (r * 0.299 + g * 0.587 + b * 0.114) < 150 else "black"
@@ -317,80 +324,86 @@ if selected_pair:
             styled = intensity_stats.style.map(_style_label_col, subset=["Label"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
+    # * Action buttons
     # Button to go back one option
-    col1, col2, col3 = st.columns([1, 1, 3])
-    with col1:
-        if st.button('⬅️', use_container_width=True):
-            current_index = selected_index
-            previous_index = (current_index - 1) % len(intersection)
-            st.session_state.selection_index = previous_index
-            st.rerun()
-            # Button to clear the current record
-        if st.button("↩️ Clear Current Record", use_container_width=True):
-            st.session_state.dataframe = st.session_state.dataframe[st.session_state.dataframe["PairID"] != selected_pair]
-            st.rerun()
-    
-    # Button to load the next option
-    with col2:
-        if st.button('➡️ Checked and Next', use_container_width=True):
-            current_index = selected_index
-            st.session_state.dataframe = update_dataframe(st.session_state.dataframe, intersection[current_index])
-            next_index = (current_index + 1) % len(intersection)
-            while str(intersection[next_index]) in st.session_state.dataframe['PairID'].values:
-                if next_index >= len(intersection) - 1:
-                    break
-                else:
-                    next_index += 1
-            st.session_state.selection_index = next_index
-            st.rerun()
-        if st.button('➡️ Mark as need fix)', use_container_width=True):
-            current_index = selected_index
-            st.session_state.dataframe = update_dataframe(st.session_state.dataframe, intersection[current_index], True)
-            next_index = (current_index + 1) % len(intersection)
-            while next_index != current_index:
-                next_pair = intersection[next_index]
-                if not st.session_state.dataframe.query(f"PairID == '{next_pair}' & Checked == True").empty:
-                    next_index = (next_index + 1) % len(intersection)
-                else:
-                    break
-            st.session_state.selection_index = next_index
-            st.rerun()
+    with st.container(border=True, key="action_buttons_container"):
+        col1, col2, col3, col4 = st.columns([1, 1, 2, 2])
+        with col1:
+            if st.button('Go back', use_container_width=True, icon="⬅️", disabled=selected_index==0):
+                current_index = selected_index
+                previous_index = (current_index - 1) % len(intersection)
+                st.session_state.selection_index = previous_index
+                st.rerun()
+                # Button to clear the current record
+            if st.button("Clear Current Record", use_container_width=True, icon="↩️"):
+                st.session_state.dataframe = st.session_state.dataframe[st.session_state.dataframe["PairID"] != selected_pair]
+                st.rerun()
+        
+        # Button to load the next option
+        with col2:
+            if st.button('Checked and Next', use_container_width=True, icon="➡️"):
+                current_index = selected_index
+                st.session_state.dataframe = update_dataframe(st.session_state.dataframe, intersection[current_index])
+                next_index = (current_index + 1) % len(intersection)
+                while str(intersection[next_index]) in st.session_state.dataframe['PairID'].values:
+                    if next_index >= len(intersection) - 1:
+                        break
+                    else:
+                        next_index += 1
+                st.session_state.selection_index = next_index
+                st.rerun()
+            if st.button('➡️ Mark as need fix)', use_container_width=True):
+                current_index = selected_index
+                st.session_state.dataframe = update_dataframe(st.session_state.dataframe, intersection[current_index], True)
+                next_index = (current_index + 1) % len(intersection)
+                while next_index != current_index:
+                    next_pair = intersection[next_index]
+                    if not st.session_state.dataframe.query(f"PairID == '{next_pair}' & Checked == True").empty:
+                        next_index = (next_index + 1) % len(intersection)
+                    else:
+                        break
+                st.session_state.selection_index = next_index
+                st.rerun()
 
-    with col3:
-        # Clear button to clear all content of the dataframe
-        if st.button(':red[Delete All]'):
-            confirm_popup("Are you absolutely sure? You will clear all records!")
+        with col3:
+            # Clear button to clear all content of the dataframe
+            if st.button(':red[Delete All Records]', icon="🗑️"):
+                confirm_popup("Are you absolutely sure? You will clear all records!")
 
-        answer = st.session_state.get('last_confirmation', 0)
-        if answer:
-            st.write("Done")
-            st.warning("Dataframe deleted")
-            logger.warning("Deleted the dataframe")
-            clean_dataframe(st.session_state.frame_path)
-            st.session_state.pop('dataframe', None)
-            st.session_state.pop('last_confirmation', None)
-            st.warning("CSV file deleted! Reloading in 3 seconds...")
-            time.sleep(3)
-            st.stop()
-        else:
-            st.session_state.pop('last_confirmation', None)
+            answer = st.session_state.get('last_confirmation', 0)
+            if answer:
+                st.write("Done")
+                st.warning("Dataframe deleted")
+                logger.warning("Deleted the dataframe")
+                clean_dataframe(st.session_state.frame_path)
+                st.session_state.pop('dataframe', None)
+                st.session_state.pop('last_confirmation', None)
+                st.warning("CSV file deleted! Reloading in 3 seconds...")
+                time.sleep(3)
+                st.stop()
+            else:
+                st.session_state.pop('last_confirmation', None)
 
-    # Example button to save the DataFrame
-    if st.button('Save DataFrame'):
-        save_dataframe(st.session_state.dataframe, st.session_state.frame_path)
-        st.success("DataFrame saved!")
+        with col4:
+            # Example button to save the DataFrame
+            if st.button('Save DataFrame', icon="💾", use_container_width=True):
+                save_dataframe(st.session_state.dataframe, st.session_state.frame_path)
+                st.success("DataFrame saved!")
 
-    if 'dataframe' in st.session_state:
-        st.download_button(
-            label='Download Dataframe',
-            data=st.session_state.dataframe.to_csv(index=False).encode('utf-8'),
-            file_name='dataframe.csv',
-            mime='text/csv'
-        )
+            # If the dataframe exists, allow downloading as CSV
+            st.download_button(
+                label='Download Dataframe',
+                data=st.session_state.dataframe.to_csv(index=False).encode('utf-8'),
+                file_name='dataframe.csv',
+                mime='text/csv', 
+                disabled='dataframe' not in st.session_state or st.session_state.dataframe.empty, 
+                icon="📥", 
+                use_container_width=True
+            )
 
-        # Progress
+        # Progress of checking the segmentation
         st.progress(len(st.session_state.dataframe) / float(len(intersection)),
-                    text=f"Progress: ({len(st.session_state.dataframe)} / {len(intersection)})")
+                    text=f"Review Progress: ({len(st.session_state.dataframe)} / {len(intersection)})")
         if len(st.session_state.dataframe) == len(intersection):
             st.success("You've viewed all the cases!")
 
@@ -413,10 +426,12 @@ if selected_pair:
             st.plotly_chart(fig)
 
     # -- Batch export all images
+    st.subheader("Batch Export All Images")
     with st.expander("Batch Export Images"):
         export_dir = st.text_input(
             "Output directory:",
             value=str(Path(st.session_state.mri_dir).parent / "exported_overlays"),
+            key='batch_output_dir'
         )
         col_ew, col_et = st.columns(2)
         with col_ew:

@@ -108,10 +108,11 @@ def draw_contour(grayscale_image, labeled_segmentation, width=1, alpha=1.0):
         # Erode by width pixels so drawn contours stay fully inside the mask boundary
         eroded = cv2.erode(mask, kernel, iterations=1)
         contours, _ = cv2.findContours(eroded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(overlay, contours, -1, color, width)
         contour_mask = np.zeros(labeled_segmentation.shape[:2], dtype=np.uint8)
-        cv2.drawContours(contour_mask, contours, -1, 1, width)
-        contour_any |= contour_mask.astype(bool)
+        cv2.drawContours(contour_mask, contours, -1, 1, width, cv2.LINE_8)
+        band = contour_mask.astype(bool)
+        overlay[band] = color
+        contour_any |= band
 
     # Single alpha blend — only where contours exist
     result = base_image.copy()

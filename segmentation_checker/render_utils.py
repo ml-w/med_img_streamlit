@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
-
+from functools import lru_cache
 from visualization import (
     crop_image_to_segmentation_sitk,
     draw_contour,
@@ -14,6 +14,7 @@ from visualization import (
     rescale_intensity_3d,
 )
 from analysis import compute_label_statistics
+import streamlit as st # Just for cache
 
 logger = logging.getLogger("App")
 
@@ -50,7 +51,7 @@ def check_image_metadata(
     is_match = all([spacing_match, direction_match, origin_match, size_match])
     return is_match, messages
 
-
+st.cache_data
 def render_current_pair(
     mri_path: Path,
     seg_path: Path,

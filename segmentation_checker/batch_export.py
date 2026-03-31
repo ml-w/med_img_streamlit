@@ -60,7 +60,11 @@ def _export_one(
     try:
         image = render_pair(mri_path, seg_path, **render_kwargs)
         out_path = output_dir / f"{pair_id}.png"
-        cv2.imwrite(str(out_path), image)
+        # draw_contour produces an array with RGB channel values on a BGR-labeled image.
+        # st.image displays it correctly by treating it as RGB. cv2.imwrite performs
+        # BGR→RGB conversion before writing PNG, which would swap the channels.
+        # Converting RGB→BGR first ensures the written file matches what the viewer shows.
+        cv2.imwrite(str(out_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
         return (pair_id, True, str(out_path))
     except Exception as e:
         logger.error(f"Failed to export {pair_id}: {e}", exc_info=True)
