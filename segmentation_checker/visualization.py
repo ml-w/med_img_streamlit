@@ -1,9 +1,9 @@
 import cv2
 import numpy as np
 import SimpleITK as sitk
-import streamlit as st
+import logging
 
-logger = st.logger.get_logger("App")
+logger = logging.getLogger("App")
 
 def make_grid(array, nrows=None, ncols=None, padding=2, normalize=False):
     """
@@ -100,14 +100,18 @@ def draw_contour(grayscale_image, labeled_segmentation, width=1, alpha=1.0):
     unique_labels = unique_labels[unique_labels != 0]
 
     colormap = {i: c for i, c in enumerate(LABEL_COLORMAP)}
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * width + 1, 2 * width + 1))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(np.ceil(width/2)+1), int(np.ceil(width))+1))
 
     for label in unique_labels:
+        color = colormap[label % len(LABEL_COLORMAP)]
         mask = (labeled_segmentation == label).astype(np.uint8)
+        # Erode by width pixels so drawn contours stay fully inside the mask boundary
         eroded = cv2.erode(mask, kernel, iterations=1)
-        band = (mask - eroded).astype(bool)
-        overlay[band] = colormap[label % len(LABEL_COLORMAP)]
-        contour_any |= band
+        contours, _ = cv2.findContours(eroded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay, contours, -1, color, width)
+        contour_mask = np.zeros(labeled_segmentation.shape[:2], dtype=np.uint8)
+        cv2.drawContours(contour_mask, contours, -1, 1, width)
+        contour_any |= contour_mask.astype(bool)
 
     # Single alpha blend — only where contours exist
     result = base_image.copy()

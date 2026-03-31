@@ -3,13 +3,12 @@ from multiprocessing import Value
 import sys
 import re
 from turtle import onrelease
-import SimpleITK as sitk
 import numpy as np
 import pandas as pd
 
-import cv2
-from visualization import *
-from analysis import compute_label_statistics
+from visualization import LABEL_COLORMAP
+from render_utils import render_current_pair
+from batch_export import batch_export
 from pathlib import Path
 from mnts.utils import get_fnames_by_IDs, get_unique_IDs
 
@@ -23,6 +22,8 @@ from typing import *
 import logging, time
 from rich.logging import RichHandler
 from rich.traceback import install
+
+NCOLS = 5
 install()
 
 # -- inistilize states
@@ -30,6 +31,11 @@ st.session_state['last_confirmation'] = st.session_state.get("last_confirmation"
 
 st.set_page_config(layout="wide")  
 st.write("# Segmentation Checker")
+
+# -- Default values
+
+MRI_DIR_DEFAULT = ""
+SEG_DIR_DEFAULT = ""
 
 # -- Add rich handler if it's not already there:
 def setup_logger(logger):
@@ -97,47 +103,27 @@ def load_pair(MRI_DIR: Path, SEG_DIR: Path, id_globber:str = r"\w+\d+"):
     paired = {sid: (mri_files[sid], seg_files[sid]) for sid in intersection}
     return paired
 
-def clean_dataframe():
-    r"""This cleans the dataframe and is called by a button after confirmation"""
-    st.warning("Dataframe deleted")
-    st.session_state.pop('dataframe')
-    if 'frame_path' in st.session_state:
-        p = Path(st.session_state.frame_path)
-        if p.is_file():
-            p.unlink()
-            st.warning("CSV file is deleted! Reloading in 3 second...")
-    # this stops the popup
-    st.session_state.pop('last_confirmation')
-    # reload the dataframe
-    time.sleep(3)
-    st.stop()
+def clean_dataframe(frame_path: Path) -> None:
+    r"""Delete the CSV tracking file from disk. Caller handles session state and UI."""
+    if frame_path.is_file():
+        frame_path.unlink()
 
-def load_dataframe(p: Path = None):
-    p = p or Path(st.session_state.get('frame_path', None))
+def load_dataframe(p: Path) -> Optional[pd.DataFrame]:
+    r"""Load the tracking dataframe from CSV. Returns None if the file does not exist."""
     if p.is_file():
-        st.session_state.dataframe = pd.read_csv(p)
+        return pd.read_csv(p)
+    return None
 
-def check_image_metadata(img1:sitk.Image, img2: sitk.Image, tolerance=1e-3):
-    r"""This checks the meta information of the image and the segmentation to make sure they are the same."""
-    # Check metadata with tolerance
-    spacing_match = np.all(np.isclose(mri_image.GetSpacing(), seg_image.GetSpacing(), atol=tolerance))
-    direction_match = np.all(np.isclose(mri_image.GetDirection(), seg_image.GetDirection(), atol=tolerance))
-    origin_match = np.all(np.isclose(mri_image.GetOrigin(), seg_image.GetOrigin(), atol=tolerance))
-    size_match = np.array_equal(img1.GetSize(), img2.GetSize())
+def save_dataframe(df: pd.DataFrame, frame_path: Path) -> None:
+    r"""Save the tracking dataframe to CSV."""
+    df.to_csv(frame_path, index=False)
 
-    if spacing_match and direction_match and origin_match:
-        st.success("All metadata matches: spacing, direction, and origin.")
-    else:
-        if not spacing_match:
-            st.error(f"Spacing does not match: {img1.GetSpacing() = } | {img2.GetSpacing() = }")
-        if not direction_match:
-            st.error(f"Direction does not match: {img1.GetDirection() = } | {img2.GetDirection() = }")
-        if not origin_match:
-            st.error(f"Origin does not match: {img1.GetOrigin() = } | {img2.GetOrigin() = }")
-        if not size_match:
-            st.error(f"Size does not match: {img1.GetSize() = } | {img2.GetSize() = }")
-
-    return all([spacing_match, direction_match, origin_match, size_match])
+def update_dataframe(df: pd.DataFrame, pair_id: str, need_fix: bool = False) -> pd.DataFrame:
+    r"""Add a checked row for pair_id if not already present. Returns updated dataframe."""
+    if not ((df["PairID"] == pair_id) & (df["Checked"])).any():
+        new_row = pd.Series({"PairID": pair_id, "Checked": True, "NeedFix": need_fix})
+        df = pd.concat([df, new_row.to_frame().T], ignore_index=True)
+    return df
 
 # -- Load the state if it exists
 # Function to load state from a JSON file
@@ -164,14 +150,14 @@ state_file = ".session.json"
 if 'initialized' not in st.session_state:
     loaded_state = load_state(state_file)
     if loaded_state:
-        st.session_state.mri_dir = Path(loaded_state.get('mri_dir', "/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2"))
-        st.session_state.seg_dir = Path(loaded_state.get('seg_dir', "/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2_NPCseg"))
+        st.session_state.mri_dir = Path(loaded_state.get('mri_dir', MRI_DIR_DEFAULT))
+        st.session_state.seg_dir = Path(loaded_state.get('seg_dir', SEG_DIR_DEFAULT))
         st.session_state.id_globber = loaded_state.get('id_globber', r"\w{0,5}\d+")
         st.session_state.frame_path = Path(loaded_state.get('frame_path', "./Checked_Images.csv"))
     else:
         # Initialize default settings if loading failed
-        st.session_state.mri_dir = Path("/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2")
-        st.session_state.seg_dir = Path("/home/lwong/Storage/Data/NPC_Segmentation/60.Large-Study/v1-All-Data/Normalized_2_NPCseg")
+        st.session_state.mri_dir = Path(MRI_DIR_DEFAULT)
+        st.session_state.seg_dir = Path(SEG_DIR_DEFAULT)
         st.session_state.id_globber = r"\w{0,5}\d+"
         st.session_state.frame_path = Path("Checked_Images.csv")
     st.session_state.initialized = True
@@ -186,8 +172,9 @@ with st.expander("Directory Setup", expanded=st.session_state.get("require_setup
     col1, _ = st.columns([1, 3])
     with col1:
         if st.button("Reload Dataframe", use_container_width=True, key="btn_reload_dataframe"):
-            # Reload the dataframe from specified framepath
-            load_dataframe(st.session_state.frame_path)
+            df = load_dataframe(st.session_state.frame_path)
+            if df is not None:
+                st.session_state.dataframe = df
             st.rerun()
 
 # Persist the current session inputs automatically
@@ -262,15 +249,6 @@ except:
     st.write("Your selected ID does not match with the records.")
     st.stop()
 
-# Function to save DataFrame
-def save_dataframe():
-    st.session_state.dataframe.to_csv(frame_path, index=False)
-
-def update_dataframe(pair_id, need_fix=False):
-    df = st.session_state.dataframe
-    if not ((df["PairID"] == pair_id) & (df["Checked"])).any():
-        new_row = pd.Series({"PairID": pair_id, "Checked": True, "NeedFix": need_fix})
-        st.session_state.dataframe = pd.concat([df, new_row.to_frame().T], ignore_index=True)
 
 @st.dialog("Are you sure?")
 def confirm_popup(text="Are you sure?"):
@@ -286,6 +264,7 @@ if selected_pair:
     if any(selected_pair == str(x) for x in st.session_state.dataframe['PairID']):
         st.warning("You have already seen this case!")
     
+    # * Display
     with st.container(height=700):
         image_slot = st.empty()
     
@@ -303,55 +282,30 @@ if selected_pair:
         contour_alpha = st.slider('Contour Alpha', min_value=0.0, max_value=1.0, value=1.0, step=0.05)
 
     
+    intensity_stats = pd.DataFrame()  # safe default if rendering fails
+    mri_path, seg_path = paired[selected_pair]
     with st.spinner("Running"):
-        mri_path, seg_path = paired[selected_pair]
-
-        # Load images
-        mri_image = sitk.ReadImage(str(mri_path))
-        seg_image = sitk.ReadImage(str(seg_path))
-
-        # Check if the two images has the same spacing
-        same_spacial = check_image_metadata(mri_image, seg_image)
-
-        if not same_spacial:
-            st.warning("Resampling")
-            seg_image = sitk.Resample(seg_image, mri_image)
-
-        try:
-            mri_image, seg_image = crop_image_to_segmentation_sitk(mri_image, seg_image, 20)
-        except ValueError as e:
-            st.warning(f"Something wrong with the segmentation.")
-            logger.error(e, exc_info=True)
-        except IndexError as e:
-            st.warning("The segmentation seems to be empty")
-            logger.error(e, exc_info=True)
-
-        # Compute per-label signal intensity statistics (before numpy conversion)
-        intensity_stats = compute_label_statistics(mri_image, seg_image)
-
-        mri_image = sitk.GetArrayFromImage(mri_image)
-        seg_image = sitk.GetArrayFromImage(seg_image)
-
-        # Rescale on 3D volume first (avoids padding zeros in percentile calc), then grid
-        ncols = 5
-        mri_image = rescale_intensity_3d(mri_image, lower=lower, upper=upper)
-        mri_image = make_grid(mri_image, ncols=ncols)
-        seg_image = make_grid(seg_image, ncols=ncols).astype('int')
-
-        # Upscale grids to display resolution before drawing contours so lines stay crisp
-        display_width = 2800
-        scale = display_width / mri_image.shape[1]
-        target_size = (display_width, int(mri_image.shape[0] * scale))
-        mri_image = cv2.resize(mri_image, target_size, interpolation=cv2.INTER_CUBIC)
-        seg_image = cv2.resize(seg_image.astype(np.uint8), target_size, interpolation=cv2.INTER_NEAREST).astype(int)
-
-        try:
-            mri_image = draw_contour(mri_image, seg_image, width=contour_width, alpha=contour_alpha)
-        except ValueError:
-            st.warning("Something wrong with the segmetnation.")
-
-        # Display images
-        image_slot.image(mri_image, use_column_width=True)
+        rendered_image, intensity_stats, _metadata_match, metadata_messages, warning_messages = render_current_pair(
+            mri_path=mri_path,
+            seg_path=seg_path,
+            lower=lower,
+            upper=upper,
+            contour_width=contour_width,
+            contour_alpha=contour_alpha,
+            ncols=NCOLS,
+            display_width=2800,
+        )
+        for level, text in metadata_messages:
+            if level == 'success':
+                st.success(text)
+            else:
+                st.error(text)
+        for msg in warning_messages:
+            st.warning(msg)
+        if rendered_image is not None:
+            image_slot.image(rendered_image, use_column_width=True, output_format="PNG")
+        else:
+            st.error("Rendering failed — see warnings above.")
 
     # Signal intensity statistics per segmentation label
     if not intensity_stats.empty:
@@ -380,7 +334,7 @@ if selected_pair:
     with col2:
         if st.button('➡️ Checked and Next', use_container_width=True):
             current_index = selected_index
-            update_dataframe(intersection[current_index])
+            st.session_state.dataframe = update_dataframe(st.session_state.dataframe, intersection[current_index])
             next_index = (current_index + 1) % len(intersection)
             while str(intersection[next_index]) in st.session_state.dataframe['PairID'].values:
                 if next_index >= len(intersection) - 1:
@@ -391,7 +345,7 @@ if selected_pair:
             st.rerun()
         if st.button('➡️ Mark as need fix)', use_container_width=True):
             current_index = selected_index
-            update_dataframe(intersection[current_index], True)
+            st.session_state.dataframe = update_dataframe(st.session_state.dataframe, intersection[current_index], True)
             next_index = (current_index + 1) % len(intersection)
             while next_index != current_index:
                 next_pair = intersection[next_index]
@@ -410,14 +364,20 @@ if selected_pair:
         answer = st.session_state.get('last_confirmation', 0)
         if answer:
             st.write("Done")
+            st.warning("Dataframe deleted")
             logger.warning("Deleted the dataframe")
-            clean_dataframe()
+            clean_dataframe(st.session_state.frame_path)
+            st.session_state.pop('dataframe', None)
+            st.session_state.pop('last_confirmation', None)
+            st.warning("CSV file deleted! Reloading in 3 seconds...")
+            time.sleep(3)
+            st.stop()
         else:
-            st.session_state.pop('last_confirmation')
+            st.session_state.pop('last_confirmation', None)
 
     # Example button to save the DataFrame
     if st.button('Save DataFrame'):
-        save_dataframe()
+        save_dataframe(st.session_state.dataframe, st.session_state.frame_path)
         st.success("DataFrame saved!")
 
     if 'dataframe' in st.session_state:
@@ -451,3 +411,42 @@ if selected_pair:
 
             # Display the pie chart in Streamlit
             st.plotly_chart(fig)
+
+    # -- Batch export all images
+    with st.expander("Batch Export Images"):
+        export_dir = st.text_input(
+            "Output directory:",
+            value=str(Path(st.session_state.mri_dir).parent / "exported_overlays"),
+        )
+        col_ew, col_et = st.columns(2)
+        with col_ew:
+            export_workers = st.number_input("Threads", min_value=1, max_value=16, value=4)
+        with col_et:
+            export_width = st.number_input("Image width (px)", min_value=800, max_value=4000, value=2800, step=200)
+
+        if st.button("Export All", type="primary"):
+            export_path = Path(export_dir)
+            progress_bar = st.progress(0, text="Exporting...")
+
+            def _update_progress(completed, total):
+                progress_bar.progress(completed / total, text=f"Exported {completed}/{total}")
+
+            results = batch_export(
+                paired=paired,
+                output_dir=export_path,
+                max_workers=export_workers,
+                progress_callback=_update_progress,
+                ncols=NCOLS,
+                contour_width=contour_width,
+                contour_alpha=contour_alpha,
+                window_lower=lower,
+                window_upper=upper,
+                display_width=export_width,
+            )
+            succeeded = sum(1 for _, ok, _ in results if ok)
+            failed = [r for r in results if not r[1]]
+            st.success(f"Exported {succeeded}/{len(results)} images to `{export_path}`")
+            if failed:
+                st.warning(f"{len(failed)} failed:")
+                for pid, _, msg in failed:
+                    st.text(f"  {pid}: {msg}")
