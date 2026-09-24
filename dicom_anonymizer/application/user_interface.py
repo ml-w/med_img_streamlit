@@ -15,13 +15,16 @@ from app_settings.config import (
     update_tag_defaults,
     upload_df_id,
     tags_2_anon,
+    default_tags_2_anon,
     tags_2_spare,
     tags_2_anon_extra,
     regex_pattern_default,
     new_tags,
     vr_type_options,
     vr_type_defaults,
-    default_update_tags
+    default_update_tags,
+    scan_max_workers,
+    scan_parallel_threshold,
 )
 
 # ---------------------------------------------------------------------------
@@ -154,6 +157,8 @@ def streamlit_app():
                         new_tags=list(new_tags.keys()),
                         series_mode=True,   # always scan at series level
                         progress_bar=progress_bar,
+                        max_workers=scan_max_workers,
+                        parallel_threshold=scan_parallel_threshold,
                     )
                     # Store with RangeIndex; the PK is built on Confirm PK below
                     st.session_state.dcm_info = raw.reset_index(drop=True)
@@ -437,6 +442,15 @@ def streamlit_app():
         effective_tags_2_spare = list(tags_2_spare) + _parse_spare_tags(st.session_state.spare_tags_input)
         effective_extra_tags_2_anon = list(tags_2_anon_extra) + _parse_spare_tags(st.session_state.anon_tags_input)
         active_regex_pattern = st.session_state.regex_pattern_input.strip() or None
+
+        # Tags for a "columns to update" key the user did NOT select must not be
+        # blanked to "" by the base tags_2_anon safety net — that would override the
+        # VR-type "Anonymized" pass for tags like PatientName (VR=PN) whenever the
+        # user simply didn't opt to customize them. Selected tags stay in the list.
+        base_tags_2_anon = tags_2_anon if tags_2_anon is not None else default_tags_2_anon
+        effective_tags_2_anon = compute_effective_tags_2_anon(
+            base_tags_2_anon, update_tag_defaults, st.session_state.selected_update_tags
+        )
         if active_regex_pattern:
             try:
                 re.compile(active_regex_pattern)
@@ -505,7 +519,7 @@ def streamlit_app():
                         anonymize(
                             file_dir=file_path,
                             output_dir=output_dir,
-                            tags=tags_2_anon,
+                            tags=effective_tags_2_anon,
                             va_type=active_va_types,
                             update=update,
                             tags_2_spare=effective_tags_2_spare,

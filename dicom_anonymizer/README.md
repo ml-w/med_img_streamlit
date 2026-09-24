@@ -28,14 +28,14 @@ pip install -r requirements.txt
 
 ## Running the App
 
-**Recommended — via `run_app.py` (Rich logging, configurable port):**
+**Recommended — via `python run_app.py` (Rich logging, configurable port):**
 ```bash
 cd dicom_anonymizer
-uv run python run_app.py            # uv — default port 8501
-uv run python run_app.py --port 8502
-uv run python run_app.py --log-level INFO
-# or with conda/pip:
-python run_app.py --help
+python run_app.py              # default port 8501
+python run_app.py --port 8502
+python run_app.py --log-level INFO
+# or with uv:
+uv run python run_app.py
 ```
 
 **Via Streamlit directly:**
@@ -44,10 +44,7 @@ cd dicom_anonymizer/application
 streamlit run user_interface.py
 ```
 
-**Via `streamlit run` from project root:**
-```bash
-streamlit run dicom_anonymizer/run_app.py
-```
+**Note:** Do not run `streamlit run run_app.py` — `run_app.py` is itself a launcher and will show an error in the browser asking you to use `python run_app.py` instead. Alternatively, run `streamlit run DicomAnonymizer.py` from the `application/` directory.
 
 ## Workflow
 

@@ -35,8 +35,10 @@ QUICK REFERENCE
                                ('' = blank, literal string, or callable).
   upload_df_id          str    Column used to match user-uploaded CSV rows.
 
-  tags_2_anon           list|None  Tags blanked to ""; None = use hardcoded
-                                   defaults inside anonymize().
+  tags_2_anon           list|None  Tags blanked to ""; None = use
+                                   default_tags_2_anon (below) inside anonymize().
+  default_tags_2_anon   list   VR-independent safety net used when tags_2_anon
+                               is None; always blanks these identifying tags.
   tags_2_spare          list   Tags never modified (model name, descriptions).
   tags_2_anon_extra     list   Extra tags to blank; config-level complement to
                                the UI "Additional tags to anonymize" input.
@@ -120,9 +122,36 @@ update_tag_defaults = {
 # DICOM tag: used as identifier in user-uploaded file (str)
 upload_df_id: str = 'AccessionNumber'
 
-# DICOM tags: to be blanked as empty string during anonymization (None = use hardcoded defaults in anonymize())
+# DICOM tags: to be blanked as empty string during anonymization (None = use default_tags_2_anon below)
 # >> Example: tags_2_anon = [(0x0010, 0x0010), (0x0010, 0x0020)]
 tags_2_anon: list | None = None
+
+# DICOM tags: hardcoded fallback used by anonymize() when tags_2_anon (above) is None.
+# This is a VR-independent safety net — these identifying tags are always blanked to "",
+# even for a tag whose VR type was not selected for anonymization. The UI removes tags
+# from this list for update_tag_defaults keys the user did not select to update, so an
+# unselected tag falls back to the VR-type "Anonymized" pass instead of being blanked.
+default_tags_2_anon: list = [
+    (0x0010, 0x0010),  # Patient's Name
+    (0x0010, 0x0020),  # Patient ID
+    (0x0010, 0x0030),  # Patient's Birth Date
+    (0x0010, 0x0040),  # Patient's Sex
+    (0x0010, 0x1040),  # Patient's Address
+    (0x0010, 0x2154),  # Patient's Phone Number
+    (0x0008, 0x0050),  # Accession Number
+    (0x0020, 0x0010),  # Study ID
+    (0x0008, 0x0080),  # Institution Name
+    (0x0008, 0x0081),  # Institution Address
+    (0x0008, 0x0090),  # Referring Physician's Name
+    (0x0008, 0x1048),  # Physician(s) of Record
+    (0x0008, 0x1050),  # Performing Physician's Name
+    (0x0008, 0x1070),  # Operator's Name
+    (0x0010, 0x1090),  # Medical Record Locator
+    (0x0010, 0x21B0),  # Additional Patient History
+    (0x0010, 0x4000),  # Patient Comments
+    (0x0032, 0x1032),  # Requesting Physician
+    (0x0008, 0x1040),  # Institutional Department Name
+]
 
 # DICOM tags: never modified, even if their VR type is selected for anonymization (list of (group, element) tuples)
 # tags_2_spare takes priority over tags_2_anon_extra and the UI "tags to anonymize" input.
@@ -146,3 +175,9 @@ regex_pattern_default: str | None = None
 
 # DICOM tags: to be Created (dict: 'TagName': (options))
 new_tags = {}
+
+# Number of worker processes used to read DICOM headers in parallel during the folder scan.
+scan_max_workers: int = 8
+
+# Minimum number of files in a scan before the process pool is used (small scans run sequentially).
+scan_parallel_threshold: int = 500

@@ -1,4 +1,37 @@
 import pandas as pd
+from pydicom.datadict import tag_for_keyword
+from pydicom.tag import Tag
+
+def compute_effective_tags_2_anon(base_tags: list, update_tag_defaults: dict, selected_update_tags: list) -> list:
+    """
+    Remove tags for unselected "columns to update" from the base blank-anonymization list.
+
+    Without this, a tag that the user did not choose to update (e.g. PatientName left
+    out of "columns to update") would still be blanked to "" by the hardcoded/base
+    tags_2_anon safety net, overriding the VR-type "Anonymized" pass. Dropping it from
+    the list here lets the VR-type pass (or a real update value, if the tag is kept
+    because it IS selected) handle it instead.
+
+    Args:
+        base_tags (list): (group, element) tuples to blank; either the config
+            ``tags_2_anon`` override or the built-in ``default_tags_2_anon``.
+        update_tag_defaults (dict): All configurable "columns to update" keywords.
+        selected_update_tags (list): Keywords currently selected for update.
+
+    Returns:
+        list: ``base_tags`` with tags for unselected keywords removed. Tags for
+            selected keywords are kept — an applied update overrides the blank
+            anyway, and an unfilled update falls back to blanking as before.
+    """
+    unselected = [k for k in update_tag_defaults if k not in selected_update_tags]
+    drop_tags = set()
+    for keyword in unselected:
+        tag_int = tag_for_keyword(keyword)
+        if tag_int is None:
+            continue
+        drop_tags.add(Tag(tag_int))
+
+    return [t for t in base_tags if Tag(t) not in drop_tags]
 
 def create_update_cols(udf: pd.DataFrame, update_tags: dict) -> pd.DataFrame: 
     """

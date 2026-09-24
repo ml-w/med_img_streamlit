@@ -1,4 +1,6 @@
+import os
 import re
+import fnmatch
 import pydicom
 from pydicom.errors import InvalidDicomError
 from pydicom import *
@@ -9,6 +11,52 @@ import pandas as pd
 import streamlit
 from streamlit import logger
 import functools
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+
+
+def _read_tags(path: str, tags: list[str]) -> tuple[str, Optional[dict], Optional[str]]:
+    """
+    Worker: reads one DICOM file's header and extracts ``tags``. Module-level and
+    Streamlit/logging-free so it can be pickled and run in a subprocess.
+
+    Returns:
+        (path, values_dict, None) on success, or (path, None, repr(error)) on failure.
+    """
+    try:
+        f = pydicom.dcmread(path, stop_before_pixels=True)
+    except Exception as e:
+        return path, None, repr(e)
+
+    values = {}
+    for dcm_tag in tags:
+        if dcm_tag == 'PatientName':
+            values[dcm_tag] = ''.join(getattr(f, dcm_tag, ''))
+        else:
+            values[dcm_tag] = getattr(f, dcm_tag, None)
+    return path, values, None
+
+def find_files(folder_dir: Path, fformat: str) -> list[Path]:
+    """
+    Recursively finds files matching ``fformat`` under ``folder_dir``.
+
+    Unlike ``Path.rglob``, this follows symlinked directories, so patient/series
+    folders that are symlinks (common with PACS archives or mounted storage)
+    are not silently skipped.
+
+    Args:
+        folder_dir (Path): The root folder to search.
+        fformat (str): A glob-style filename pattern (e.g. ``*.dcm``).
+
+    Returns:
+        list[Path]: Matching file paths.
+    """
+    return [
+        Path(dirpath) / fname
+        for dirpath, _, filenames in os.walk(folder_dir, followlinks=True)
+        for fname in filenames
+        if fnmatch.fnmatch(fname, fformat)
+    ]
 
 def create_output_dir(file_dir: str | Path, folder_dir: Path) -> str:
     """
@@ -30,7 +78,9 @@ def create_dcm_df(
     ref_tags: list,
     new_tags: list,
     series_mode: bool = False,
-    progress_bar: Any = None
+    progress_bar: Any = None,
+    max_workers: int = 8,
+    parallel_threshold: int = 500,
 ) -> pd.DataFrame:
     """
     Gathers the meta data of each DICOM file from the folder. 
@@ -40,8 +90,10 @@ def create_dcm_df(
         fformat (str): The file format of the targeted files. 
         unique_ids (list): The list of columns used as primary keys.
         ref_tags (list): The list of columns to be shown in template.
-        new_tags (list): The list of tags to be determine its existence. 
+        new_tags (list): The list of tags to be determine its existence.
         progress_bar (streamlit.ProgressMixin): A progress bar to tell the progress.
+        max_workers (int): Number of worker processes used to read files in parallel (series_mode only).
+        parallel_threshold (int): Minimum number of files before the process pool is used (series_mode only).
     Returns:
         pd.DataFrame: A dataframe which contains information of the dicom tags.
     """
@@ -74,32 +126,48 @@ def create_dcm_df(
         logger.get_logger('anonymizer').info("Executing in series mode")
         # Get the all the files that need processing
         progress_bar.progress(0, text="Finding files to process...")
-        file_dirs = list(folder_dir.rglob(fformat))
+        file_dirs = find_files(folder_dir, fformat)
         p = 10.0
         progress_bar.progress(p / 100, text=f"Found {len(file_dirs)} files.")
-        for i, file_dir in enumerate(file_dirs):
-            p = 10.0 + 90.0 * (i + 1) / max(len(file_dirs), 1)
-            series_dir = file_dir.parent
 
-            logger.get_logger('anonymizer').debug(f"Parsing series: {series_dir}")
-            progress_bar.progress(min(p / 100, 1.0), text=f"Parsing series: {series_dir}")
-            try:
-                f = pydicom.dcmread(str(file_dir), stop_before_pixels=True)
-            except Exception as e:
-                logger.get_logger('anonymizer').warning(f"Cannot process file: {file_dir}. Skipping...")
-                logger.get_logger('anonymizer').debug(f"Original error: {e = }")
-                continue
+        n_files = len(file_dirs)
+        str_paths = [str(fd) for fd in file_dirs]
+        worker = functools.partial(_read_tags, tags=all_tags)
+        use_parallel = n_files >= parallel_threshold and max_workers > 1
+        last_pct = 10
 
-            dcm_info['folder_dir'].append(str(series_dir))
-            dcm_info['output_dir'].append(create_output_dir(series_dir, folder_dir))
-            dcm_info['file_path'].append(str(file_dir))
+        executor = None
+        try:
+            if use_parallel:
+                # spawn (not fork): forking the multi-threaded Streamlit server can deadlock
+                executor = ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    mp_context=multiprocessing.get_context('spawn'),
+                )
+                results = executor.map(worker, str_paths, chunksize=64)
+            else:
+                results = map(worker, str_paths)
 
-            # Gather information from DICOM tags
-            for dcm_tag in all_tags:
-                if dcm_tag == 'PatientName':
-                    dcm_info[dcm_tag].append(''.join(getattr(f, dcm_tag, '')))
-                else:
-                    dcm_info[dcm_tag].append(getattr(f, dcm_tag, None))
+            for i, (path, values, err) in enumerate(results):
+                pct = int(min(10.0 + 90.0 * (i + 1) / max(n_files, 1), 100.0))
+                if pct != last_pct:
+                    progress_bar.progress(pct / 100, text=f"Parsing series: {Path(path).parent}")
+                    last_pct = pct
+
+                if values is None:
+                    logger.get_logger('anonymizer').warning(f"Cannot process file: {path}. Skipping...")
+                    logger.get_logger('anonymizer').debug(f"Original error: {err}")
+                    continue
+
+                series_dir = Path(path).parent
+                dcm_info['folder_dir'].append(str(series_dir))
+                dcm_info['output_dir'].append(create_output_dir(series_dir, folder_dir))
+                dcm_info['file_path'].append(path)
+                for dcm_tag in all_tags:
+                    dcm_info[dcm_tag].append(values[dcm_tag])
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
 
         logger.get_logger('anonymizer').info(f"Length of each item in dcm_info: {', '.join([f'{key}: {len(value)}' for key, value in dcm_info.items()])}")
         # No dedup here — each row is one file. The UI deduplicates for display/editing
@@ -111,7 +179,7 @@ def create_dcm_df(
             processed = []
             # Get the all the files that need processing
             progress_bar.progress(0, text="Finding files to process...")
-            file_list = list(folder_dir.rglob(fformat))
+            file_list = find_files(folder_dir, fformat)
             p = 10.0
             progress_bar.progress(p / 100, text=f"Found {len(file_list)} files.")
             for file_dir in file_list:
@@ -294,29 +362,17 @@ def anonymize(file_dir: str,
     # Default VR types to anonymize
     if va_type is None:
         va_type = ["PN", "LO", "SH", "AE", "DT", "DA"]
-    # Default tags to remove for anonymization
+    # Default tags to remove for anonymization — defined in app_settings/config.py
+    # (default_tags_2_anon) so the UI can reason about the same default list.
     if tags is None:
-        tags = [
-            (0x0010, 0x0010),  # Patient's Name
-            (0x0010, 0x0020),  # Patient ID
-            (0x0010, 0x0030),  # Patient's Birth Date
-            (0x0010, 0x0040),  # Patient's Sex
-            (0x0010, 0x1040),  # Patient's Address
-            (0x0010, 0x2154),  # Patient's Phone Number
-            (0x0008, 0x0050),  # Accession Number
-            (0x0020, 0x0010),  # Study ID
-            (0x0008, 0x0080),  # Institution Name
-            (0x0008, 0x0081),  # Institution Address
-            (0x0008, 0x0090),  # Referring Physician's Name
-            (0x0008, 0x1048),  # Physician(s) of Record
-            (0x0008, 0x1050),  # Performing Physician's Name
-            (0x0008, 0x1070),  # Operator's Name
-            (0x0010, 0x1090),  # Medical Record Locator
-            (0x0010, 0x21B0),  # Additional Patient History
-            (0x0010, 0x4000),  # Patient Comments
-            (0x0032, 0x1032),  # Requesting Physician
-            (0x0008, 0x1040),  # Institutional Department Name
-        ]
+        try:
+            # Works when ``application/`` is on sys.path (app runtime).
+            from app_settings.config import default_tags_2_anon
+        except ImportError:
+            # Works when this module is imported as part of the ``dicom_anonymizer``
+            # package (e.g. from tests), where app_settings isn't a top-level module.
+            from ..app_settings.config import default_tags_2_anon
+        tags = default_tags_2_anon
     try:
         f = pydicom.dcmread(str(file_dir))
 

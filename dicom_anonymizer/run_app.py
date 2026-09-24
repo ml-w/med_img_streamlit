@@ -2,6 +2,8 @@ import os
 import sys
 import logging
 import click
+import streamlit
+import streamlit.runtime
 import streamlit.web.bootstrap
 from streamlit import logger
 from rich.logging import RichHandler
@@ -82,4 +84,18 @@ def main(port: int, log_level: str) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if streamlit.runtime.exists():
+        # This script was launched with `streamlit run run_app.py` instead of `python run_app.py`.
+        # Streamlit runtime already exists from the outer `streamlit run` invocation.
+        # Trying to call main() would cause: RuntimeError: Runtime instance already exists!
+        streamlit.error(
+            "run_app.py is a launcher. Start the app with `python run_app.py` "
+            "(or `streamlit run application/DicomAnonymizer.py` from the application/ dir)"
+        )
+        logger.get_logger("anonymizer").warning(
+            "run_app.py was launched with 'streamlit run' instead of 'python'. "
+            "This causes RuntimeError: Runtime instance already exists!"
+        )
+        streamlit.stop()
+    else:
+        main()

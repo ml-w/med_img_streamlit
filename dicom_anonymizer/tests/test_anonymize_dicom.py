@@ -17,9 +17,12 @@ from dicom_anonymizer.application.anonymizer_utils.anonymize_dicom import (
     remove_info,
     anonymize,
 )
+from dicom_anonymizer.application.app_settings.config import default_tags_2_anon
+from dicom_anonymizer.application.ui_utils.ui_logic import compute_effective_tags_2_anon
 
 
-def _create_test_dicom(path: Path, patient_name: str = "John", patient_id: str = "12345") -> Path:
+def _create_test_dicom(path: Path, patient_name: str = "John", patient_id: str = "12345",
+                        series_uid: str | None = None) -> Path:
     """Create a minimal DICOM file for testing."""
     file_meta = Dataset()
     file_meta.MediaStorageSOPClassUID = generate_uid()
@@ -35,7 +38,7 @@ def _create_test_dicom(path: Path, patient_name: str = "John", patient_id: str =
     ds.PatientSex = "M"
     ds.StudyDate = "20210101"
     ds.Modality = "OT"
-    ds.SeriesInstanceUID = generate_uid()
+    ds.SeriesInstanceUID = series_uid or generate_uid()
     ds.StudyInstanceUID = generate_uid()
     ds.is_little_endian = True
     ds.is_implicit_VR = False
@@ -110,6 +113,69 @@ def test_create_dcm_df_series_mode(tmp_path):
 
     assert set(df.index) == {"P001", "P002"}
     assert set(["folder_dir", "output_dir", "PatientID", "PatientName"]).issubset(df.columns)
+
+
+def test_create_dcm_df_series_mode_one_dir_multiple_series(tmp_path):
+    """
+    Several files from DIFFERENT series/patients living in ONE directory must each
+    produce their own row carrying their own values — no sharing of tags across files.
+    """
+    base = tmp_path / "data"
+    one_dir = base / "mixed"
+    one_dir.mkdir(parents=True)
+    _create_test_dicom(one_dir / "a.dcm", patient_name="Alice", patient_id="P001")
+    _create_test_dicom(one_dir / "b.dcm", patient_name="Bob", patient_id="P002")
+    _create_test_dicom(one_dir / "c.dcm", patient_name="Carol", patient_id="P003")
+
+    df = create_dcm_df(
+        folder=str(base),
+        fformat="*.dcm",
+        unique_ids=["PatientID"],
+        ref_tags=["PatientName", "SeriesInstanceUID"],
+        new_tags=[],
+        series_mode=True,
+    )
+
+    assert len(df) == 3
+    assert set(df.index) == {"P001", "P002", "P003"}
+    name_by_pid = df["PatientName"].to_dict()
+    assert name_by_pid == {"P001": "Alice", "P002": "Bob", "P003": "Carol"}
+    # Each file must carry its own SeriesInstanceUID, not one shared across the folder
+    assert df["SeriesInstanceUID"].nunique() == 3
+
+
+def test_create_dcm_df_series_mode_parallel_matches_sequential(tmp_path):
+    """
+    The parallel (ProcessPoolExecutor) and sequential code paths must produce
+    identical DataFrames, and both must silently skip unreadable files.
+    """
+    base = tmp_path / "data"
+    one_dir = base / "mixed"
+    one_dir.mkdir(parents=True)
+    _create_test_dicom(one_dir / "a.dcm", patient_name="Alice", patient_id="P001")
+    _create_test_dicom(one_dir / "b.dcm", patient_name="Bob", patient_id="P002")
+    _create_test_dicom(one_dir / "c.dcm", patient_name="Carol", patient_id="P003")
+    _create_test_dicom(one_dir / "d.dcm", patient_name="Dave", patient_id="P004")
+    (one_dir / "junk.dcm").write_text("not a dicom file")
+
+    kwargs = dict(
+        folder=str(base),
+        fformat="*.dcm",
+        unique_ids=["PatientID"],
+        ref_tags=["PatientName", "SeriesInstanceUID"],
+        new_tags=[],
+        series_mode=True,
+    )
+
+    df_sequential = create_dcm_df(**kwargs, parallel_threshold=10**9, max_workers=2)
+    df_parallel = create_dcm_df(**kwargs, parallel_threshold=0, max_workers=2)
+
+    assert "junk" not in " ".join(df_sequential["file_path"])
+    assert "junk" not in " ".join(df_parallel["file_path"])
+    assert len(df_sequential) == 4
+    assert len(df_parallel) == 4
+
+    pd.testing.assert_frame_equal(df_sequential, df_parallel)
 
 
 # ---------------------------------------------------------------------------
@@ -237,3 +303,56 @@ def test_anonymize_spare_tag(tmp_path):
 
     out = pydicom.dcmread(str(dst))
     assert out.PatientName == "John"  # spared
+
+
+def test_anonymize_unselected_update_tag_falls_back_to_vr_pass(tmp_path):
+    """
+    Regression test: a tag removed from the blank list (because its "columns to
+    update" checkbox is unselected in the UI) must fall back to the VR-type
+    "Anonymized" pass instead of being forced to "" by the blank list.
+
+    PatientName (VR=PN) is removed from the effective tags_2_anon list, so with
+    va_type=["PN"] it should become "Anonymized". PatientID (VR=LO, not in
+    va_type) stays in the list, so it should still be blanked to "".
+    """
+    src = tmp_path / "in.dcm"
+    dst = tmp_path / "out" / "anon.dcm"
+    dst.parent.mkdir()
+    _create_test_dicom(src)
+
+    tags = [t for t in default_tags_2_anon if Tag(t) != Tag((0x0010, 0x0010))]
+    assert Tag((0x0010, 0x0020)) in [Tag(t) for t in tags]  # PatientID still listed
+
+    anonymize(str(src), str(dst), va_type=["PN"], tags=tags, tags_2_spare=[], tags_2_create={})
+
+    out = pydicom.dcmread(str(dst))
+    assert out.PatientName == "Anonymized"  # VR pass, not blanked to ""
+    assert out.PatientID == ""              # still in the blank list
+
+
+# ---------------------------------------------------------------------------
+# compute_effective_tags_2_anon
+# ---------------------------------------------------------------------------
+
+def test_compute_effective_tags_2_anon_drops_unselected():
+    """Tags for update_tag_defaults keys not in selected_update_tags are removed."""
+    update_tag_defaults = {"PatientName": "", "PatientID": "", "InstitutionName": "Anonymized"}
+    selected = ["PatientID"]  # PatientName, InstitutionName not selected
+
+    result = compute_effective_tags_2_anon(default_tags_2_anon, update_tag_defaults, selected)
+
+    assert Tag((0x0010, 0x0010)) not in [Tag(t) for t in result]  # PatientName dropped
+    assert Tag((0x0008, 0x0080)) not in [Tag(t) for t in result]  # InstitutionName dropped
+    assert Tag((0x0010, 0x0020)) in [Tag(t) for t in result]      # PatientID kept (selected)
+    # Tags unrelated to any update_tag_defaults keyword are always kept
+    assert Tag((0x0010, 0x1040)) in [Tag(t) for t in result]      # Patient's Address
+
+
+def test_compute_effective_tags_2_anon_all_selected_is_noop():
+    """When every update key is selected, the base list is returned unchanged."""
+    update_tag_defaults = {"PatientName": "", "PatientID": ""}
+    selected = ["PatientName", "PatientID"]
+
+    result = compute_effective_tags_2_anon(default_tags_2_anon, update_tag_defaults, selected)
+
+    assert [Tag(t) for t in result] == [Tag(t) for t in default_tags_2_anon]
