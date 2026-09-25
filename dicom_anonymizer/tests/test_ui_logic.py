@@ -12,7 +12,81 @@ from dicom_anonymizer.application.ui_utils.ui_logic import (
     check_unmatched_rows,
     validate_upload,
     highlight_updated_cells,
+    add_series_dir,
+    dedup_display_rows,
 )
+
+
+# ---------------------------------------------------------------------------
+# add_series_dir
+# ---------------------------------------------------------------------------
+
+def test_add_series_dir_nested(tmp_path):
+    """A nested series folder becomes its path relative to the root, forward-slashed."""
+    series_dir = tmp_path / "Pt001" / "Study1" / "SE3"
+    df = pd.DataFrame({"folder_dir": [str(series_dir)]})
+    out = add_series_dir(df, str(tmp_path))
+    assert out["SeriesDir"].tolist() == ["Pt001/Study1/SE3"]
+
+
+def test_add_series_dir_file_directly_in_root(tmp_path):
+    """A file sitting directly in the scanned root gets '.'."""
+    df = pd.DataFrame({"folder_dir": [str(tmp_path)]})
+    out = add_series_dir(df, str(tmp_path))
+    assert out["SeriesDir"].tolist() == ["."]
+
+
+def test_add_series_dir_no_folder_dir_column_is_noop():
+    """Without a folder_dir column, the DataFrame is returned unchanged."""
+    df = pd.DataFrame({"PatientID": ["1"]})
+    out = add_series_dir(df, "/some/root")
+    assert "SeriesDir" not in out.columns
+
+
+# ---------------------------------------------------------------------------
+# dedup_display_rows
+# ---------------------------------------------------------------------------
+
+def test_dedup_display_rows_aggregates_series_dir_for_coarse_pk():
+    """A PK spanning two series directories collapses to one row with values joined."""
+    df = pd.DataFrame(
+        {"PatientID": ["1", "1"], "SeriesDir": ["a/b", "c/d"]},
+        index=pd.Index(["PK1", "PK1"], name="PK"),
+    )
+    out = dedup_display_rows(df, agg_col="SeriesDir")
+    assert len(out) == 1
+    assert out.loc["PK1", "SeriesDir"] == "a/b; c/d"
+
+
+def test_dedup_display_rows_single_dir_pk_gives_single_value():
+    """A PK backed by a single directory keeps just that one value."""
+    df = pd.DataFrame(
+        {"SeriesDir": ["a/b"]},
+        index=pd.Index(["PK1"], name="PK"),
+    )
+    out = dedup_display_rows(df, agg_col="SeriesDir")
+    assert out.loc["PK1", "SeriesDir"] == "a/b"
+
+
+def test_dedup_display_rows_dedupes_repeated_identical_values():
+    """Repeated identical SeriesDir values within one PK are not duplicated in the join."""
+    df = pd.DataFrame(
+        {"SeriesDir": ["a/b", "a/b"]},
+        index=pd.Index(["PK1", "PK1"], name="PK"),
+    )
+    out = dedup_display_rows(df, agg_col="SeriesDir")
+    assert out.loc["PK1", "SeriesDir"] == "a/b"
+
+
+def test_dedup_display_rows_without_agg_col_keeps_first_row_behaviour():
+    """When agg_col isn't present, dedup falls back to first-row-wins, like before."""
+    df = pd.DataFrame(
+        {"PatientName": ["Alice", "Bob"]},
+        index=pd.Index(["PK1", "PK1"], name="PK"),
+    )
+    out = dedup_display_rows(df, agg_col="SeriesDir")
+    assert len(out) == 1
+    assert out.loc["PK1", "PatientName"] == "Alice"
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +131,31 @@ def test_update_data_editor():
     assert row1["Update_PatientName"] == "ANN"
     assert row1["Update_PatientID"] == "99"
     assert row2["Update_PatientName"] == ""
+
+
+def test_update_data_editor_ignores_extra_series_dir_column():
+    """An uploaded CSV carrying the display-only SeriesDir column still validates
+    and merges Update_* values normally — SeriesDir is never read by these helpers."""
+    edit_df = pd.DataFrame({
+        "PatientID": ["1", "2"],
+        "SeriesDir": ["a/b", "c/d"],
+    })
+    update_tags = {"PatientName": ""}
+    edit_df = create_update_cols(edit_df, update_tags)
+
+    upload_df = pd.DataFrame({
+        "PatientID": ["1"],
+        "SeriesDir": ["a/b"],
+        "Update_PatientName": ["ANN"],
+    })
+
+    error = validate_upload(edit_df, upload_df, update_tags, "PatientID")
+    assert error is None
+
+    result = update_data_editor(edit_df, upload_df, update_tags, "PatientID")
+    row1 = result[result["PatientID"] == "1"].iloc[0]
+    assert row1["Update_PatientName"] == "ANN"
+    assert row1["SeriesDir"] == "a/b"  # untouched display-only column
 
 
 def test_update_data_editor_no_match():

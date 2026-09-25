@@ -18,7 +18,7 @@ from dicom_anonymizer.application.anonymizer_utils.anonymize_dicom import (
     anonymize,
 )
 from dicom_anonymizer.application.app_settings.config import default_tags_2_anon
-from dicom_anonymizer.application.ui_utils.ui_logic import compute_effective_tags_2_anon
+from dicom_anonymizer.application.ui_utils.ui_logic import compute_effective_tags_2_anon, add_series_dir
 
 
 def _create_test_dicom(path: Path, patient_name: str = "John", patient_id: str = "12345",
@@ -176,6 +176,32 @@ def test_create_dcm_df_series_mode_parallel_matches_sequential(tmp_path):
     assert len(df_parallel) == 4
 
     pd.testing.assert_frame_equal(df_sequential, df_parallel)
+
+
+def test_create_dcm_df_series_mode_with_series_dir(tmp_path):
+    """
+    End-to-end: add_series_dir() layered on top of create_dcm_df() output computes
+    SeriesDir relative to the scanned root — nested series get their relative path,
+    a file sitting directly in the root gets '.'.
+    """
+    base = tmp_path / "data"
+    nested = base / "Pt001" / "Study1" / "SE3"
+    nested.mkdir(parents=True)
+    _create_test_dicom(nested / "img.dcm", patient_id="P001")
+    _create_test_dicom(base / "img2.dcm", patient_id="P002")
+
+    df = create_dcm_df(
+        folder=str(base),
+        fformat="*.dcm",
+        unique_ids=["PatientID"],
+        ref_tags=["PatientName"],
+        new_tags=[],
+        series_mode=True,
+    )
+    df = add_series_dir(df, str(base))
+
+    assert df.loc["P001", "SeriesDir"] == "Pt001/Study1/SE3"
+    assert df.loc["P002", "SeriesDir"] == "."
 
 
 # ---------------------------------------------------------------------------

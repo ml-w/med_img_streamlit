@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 from pydicom.datadict import tag_for_keyword
 from pydicom.tag import Tag
@@ -33,7 +35,79 @@ def compute_effective_tags_2_anon(base_tags: list, update_tag_defaults: dict, se
 
     return [t for t in base_tags if Tag(t) not in drop_tags]
 
-def create_update_cols(udf: pd.DataFrame, update_tags: dict) -> pd.DataFrame: 
+def add_series_dir(df: pd.DataFrame, root_folder: str, col: str = 'SeriesDir') -> pd.DataFrame:
+    """
+    Add a display-only column with each row's series directory (the parent folder of
+    its DICOM file, from the ``folder_dir`` column) expressed relative to the scanned
+    root folder, e.g. ``Pt001/Study1/SE3``. Uses forward slashes (``Path.as_posix()``);
+    a file sitting directly in the root becomes ``'.'``.
+
+    Robust to trailing slashes / symlink resolution differences between ``folder_dir``
+    and ``root_folder``: falls back to the unresolved paths, and finally to the
+    absolute ``folder_dir`` string, if a relative path cannot be computed.
+
+    Args:
+        df (pd.DataFrame): DataFrame with a ``folder_dir`` column, as produced by
+            ``create_dcm_df``.
+        root_folder (str): The folder path passed to ``create_dcm_df`` as ``folder``.
+        col (str): Name of the column to add.
+
+    Returns:
+        pd.DataFrame: ``df`` with the new column added (modified in place and returned).
+    """
+    if 'folder_dir' not in df.columns:
+        return df
+
+    root = Path(root_folder)
+    try:
+        root_resolved = root.resolve()
+    except OSError:
+        root_resolved = root
+
+    def _relative(folder_dir: str) -> str:
+        p = Path(folder_dir)
+
+        def _fmt(rel: Path) -> str:
+            return '.' if str(rel) == '.' else rel.as_posix()
+
+        try:
+            return _fmt(p.resolve().relative_to(root_resolved))
+        except (OSError, ValueError):
+            pass
+        try:
+            return _fmt(p.relative_to(root))
+        except ValueError:
+            return p.as_posix()
+
+    df[col] = df['folder_dir'].apply(_relative)
+    return df
+
+
+def dedup_display_rows(df: pd.DataFrame, agg_col: str = 'SeriesDir', sep: str = '; ') -> pd.DataFrame:
+    """
+    Collapse a per-file display DataFrame to one row per PK (index value).
+
+    For ``agg_col`` (when present in ``df``), the unique values across all rows
+    sharing a PK are joined with ``sep`` in first-seen order — e.g. a coarser PK
+    spanning two series directories collapses to a single ``'a/b; c/d'``-style value.
+    Every other column keeps the existing first-row-wins dedup behaviour.
+
+    Args:
+        df (pd.DataFrame): PK-indexed DataFrame with one row per underlying file/series.
+        agg_col (str): Column to aggregate instead of keeping only the first row's value.
+        sep (str): Separator used to join aggregated unique values.
+
+    Returns:
+        pd.DataFrame: One row per unique index value.
+    """
+    first = df.loc[~df.index.duplicated()].copy()
+    if agg_col in df.columns:
+        joined = df[agg_col].astype(str).groupby(df.index).agg(lambda s: sep.join(dict.fromkeys(s)))
+        first[agg_col] = first.index.map(joined)
+    return first
+
+
+def create_update_cols(udf: pd.DataFrame, update_tags: dict) -> pd.DataFrame:
     """
     Create new columns in udf for updating values of the defined DICOM tags. 
     

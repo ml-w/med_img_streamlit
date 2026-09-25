@@ -12,6 +12,7 @@ from app_settings.config import (
     pk_tag_options,
     pk_default,
     ref_tag_options,
+    derived_display_options,
     update_tag_defaults,
     upload_df_id,
     tags_2_anon,
@@ -74,9 +75,11 @@ def streamlit_app():
         "edit_df": None,
         "pk_columns": pk_default,
         "pk_committed": False,
+        "fetched_folder": "",
         "matcher_id": upload_df_id,
         "selected_display_tags": [],
         "selected_update_tags": [],
+        "series_dir_default_applied": False,
         "spare_tags_input": "",
         "anon_tags_input": "",
         "regex_pattern_input": regex_pattern_default or "",
@@ -160,8 +163,15 @@ def streamlit_app():
                         max_workers=scan_max_workers,
                         parallel_threshold=scan_parallel_threshold,
                     )
+                    # Compute the display-only SeriesDir column (folder_dir relative to
+                    # the scanned root) before storing; not a DICOM tag, never a PK option.
+                    raw = add_series_dir(raw, folder)
                     # Store with RangeIndex; the PK is built on Confirm PK below
                     st.session_state.dcm_info = raw.reset_index(drop=True)
+                    # Remember the exact root that was scanned, so Step 3 can re-derive
+                    # SeriesDir later against the right base even if the "folder" text
+                    # input is edited afterwards without a re-fetch.
+                    st.session_state.fetched_folder = folder
                 except Exception as e:
                     st.error(f':warning: We cannot find any files in the file extension in the directory.\nOriginal error: {e}')
                     logger.exception(e)
@@ -244,14 +254,29 @@ def streamlit_app():
         if st.session_state.dcm_info[active_upload_df_id].isnull().any():
             st.warning(':warning: Some DICOM files are missing the selected matcher column.')
 
+        display_options = ref_tag_options + derived_display_options
+
+        # Drop any persisted selection that's no longer a valid option (e.g. after a
+        # config change) so the multiselect widget below doesn't error on its default.
+        st.session_state.selected_display_tags = [
+            c for c in st.session_state.selected_display_tags if c in display_options
+        ]
+
         if not st.session_state.selected_display_tags:
-            st.session_state.selected_display_tags = ref_tag_options
+            st.session_state.selected_display_tags = list(display_options)
+        elif not st.session_state.series_dir_default_applied and 'SeriesDir' not in st.session_state.selected_display_tags:
+            # One-time migration for sessions saved before SeriesDir existed: add it
+            # once. If the user later deselects it, the flag below stops it from
+            # being re-added.
+            st.session_state.selected_display_tags = st.session_state.selected_display_tags + ['SeriesDir']
+        st.session_state.series_dir_default_applied = True
+
         if not st.session_state.selected_update_tags:
             st.session_state.selected_update_tags = default_update_tags
-            
+
         @st.fragment
         def _column_selection():
-            st.multiselect('Select columns to display', ref_tag_options, key='selected_display_tags')
+            st.multiselect('Select columns to display', display_options, key='selected_display_tags')
             st.multiselect('Select columns to update', list(update_tag_defaults.keys()), key='selected_update_tags')
 
         _column_selection()
@@ -259,12 +284,27 @@ def streamlit_app():
         active_ref_tags = st.session_state.selected_display_tags
         active_update_tags = {k: update_tag_defaults[k] for k in st.session_state.selected_update_tags}
 
+        # Robustness: if SeriesDir is selected for display but missing from dcm_info
+        # (e.g. a session whose dcm_info was fetched by an older app version, kept
+        # alive in memory across a Streamlit code hot-reload — SeriesDir is excluded
+        # from the persisted .session.json since dcm_info itself is), derive it now
+        # instead of silently dropping the column below. Re-fetching isn't required.
+        if 'SeriesDir' in active_ref_tags and 'SeriesDir' not in st.session_state.dcm_info.columns:
+            root_folder = st.session_state.fetched_folder or folder
+            st.session_state.dcm_info = add_series_dir(st.session_state.dcm_info, root_folder)
+
         # Ensure the matcher column is always included so it appears in edit_df and the CSV template.
         display_cols = list(dict.fromkeys([active_upload_df_id] + active_unique_ids + active_ref_tags + list(active_update_tags.keys())))
         display_cols = [c for c in display_cols if c in st.session_state.dcm_info.columns]
         uids_df = st.session_state.dcm_info[display_cols]
-        # edit_df: one row per PK (deduped), PK index preserved for the Run-step join
-        uids_df = uids_df.loc[~uids_df.index.duplicated()]
+        # edit_df: one row per PK (deduped), PK index preserved for the Run-step join.
+        # When SeriesDir is displayed, aggregate its unique per-PK values (e.g. a
+        # coarser PK spanning two series directories) instead of silently keeping
+        # only the first row's directory.
+        if 'SeriesDir' in display_cols:
+            uids_df = dedup_display_rows(uids_df, agg_col='SeriesDir')
+        else:
+            uids_df = uids_df.loc[~uids_df.index.duplicated()]
         st.session_state.uids = uids_df
 
         edit_df = create_update_cols(uids_df.copy(), active_update_tags)

@@ -106,6 +106,12 @@ ref_tag_options = [
     'SeriesInstanceUID',
 ]
 
+# Display-only columns computed from file paths rather than read from DICOM headers.
+# These are NOT DICOM tags: create_dcm_df() never sees them, and they must never be
+# added to pk_tag_options (there is no header value to key on). Offered alongside
+# ref_tag_options in the "Select columns to display" multiselect.
+derived_display_options = ['SeriesDir']
+
 # DICOM tags: available to be anonymized with default values or user's inputs (dict)
 default_update_tags = ['PatientName', 'PatientID', 'AccessionNumber']
 update_tag_defaults = {

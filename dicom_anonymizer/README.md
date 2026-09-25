@@ -67,6 +67,7 @@ All defaults are in `application/app_settings/config.py`:
 |---|---|
 | `pk_tag_options` / `pk_default` | Tags available for PK building; default selection |
 | `ref_tag_options` | Tags shown as read-only reference columns |
+| `derived_display_options` | Display-only columns computed from file paths, not DICOM headers (currently `SeriesDir` — the series' directory, shown relative to the scanned root, e.g. `Pt001/Study1/SE3`) |
 | `update_tag_defaults` | Tags with editable `Update_*` columns; value is the default (empty string, literal, or callable) |
 | `upload_df_id` | Column used as matcher when uploading a CSV |
 | `tags_2_anon` | Explicit tag list to blank (uses built-in list if `None`) |
