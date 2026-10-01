@@ -31,6 +31,11 @@ QUICK REFERENCE
   pk_default            list   PK columns pre-selected on first load.
 
   ref_tag_options       list   Tags shown as read-only reference columns.
+  scan_extra_tags       list   Tags scanned into dcm_info alongside
+                               ref_tag_options/update_tag_defaults but never
+                               offered for display/update selection (currently
+                               ['SeriesDescription'], used internally by the
+                               per_series output layout's clash subfolder).
   update_tag_defaults   dict   Tags editable by the user; value = default
                                ('' = blank, literal string, or callable).
   upload_df_id          str    Column used to match user-uploaded CSV rows.
@@ -47,6 +52,20 @@ QUICK REFERENCE
 
   new_tags              dict   Tags created when absent from the DICOM file.
                                Format: {'TagName': (option1, option2, ...)}.
+
+  output_layout_options dict   Output layout keys -> UI radio labels:
+                               'mirror' (default), 'by_tag', 'per_series'.
+                               See ui_utils.ui_logic.plan_output_paths.
+  output_layout_default str    Output layout pre-selected on first load.
+  series_folder_name_options  list  Tags offered for the 'per_series' layout's
+                               "Folder name from" selectbox.
+  series_folder_name_default  str   Default selection for the above.
+
+  anon_max_workers      int    Default worker process count shown by the
+                               "Worker processes" number_input at Run.
+  anon_parallel_threshold  int  Minimum total file count before the Run step
+                               uses a process pool; smaller jobs run
+                               sequentially (spawn startup costs ~1-2s).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TAG FORMAT
@@ -111,6 +130,14 @@ ref_tag_options = [
 # added to pk_tag_options (there is no header value to key on). Offered alongside
 # ref_tag_options in the "Select columns to display" multiselect.
 derived_display_options = ['SeriesDir']
+
+# DICOM tags: scanned into dcm_info alongside ref_tag_options/update_tag_defaults,
+# but NOT offered in the "Select columns to display"/"Select columns to update"
+# multiselects (display_options is built from ref_tag_options + derived_display_options
+# only) -- so these never leak into edit_df / the displayed table / the downloaded CSV
+# template. Currently used internally by the 'per_series' output layout to name a
+# clashing series' subfolder (see ui_utils.ui_logic.plan_output_paths).
+scan_extra_tags: list = ['SeriesDescription']
 
 # DICOM tags: available to be anonymized with default values or user's inputs (dict)
 default_update_tags = ['PatientName', 'PatientID', 'AccessionNumber']
@@ -187,3 +214,30 @@ scan_max_workers: int = 8
 
 # Minimum number of files in a scan before the process pool is used (small scans run sequentially).
 scan_parallel_threshold: int = 500
+
+# Output layout keys -> human-readable UI radio labels. See "Output layouts" in
+# dicom_anonymizer/CLAUDE.md and ui_utils.ui_logic.plan_output_paths.
+output_layout_options: dict = {
+    'mirror':     'Mirror original directory structure',
+    'by_tag':     'Organize by tag value',
+    'per_series': 'One folder per series',
+}
+
+# Output layout pre-selected on first load.
+output_layout_default: str = 'mirror'
+
+# Tags offered for the 'per_series' output layout's "Folder name from" selectbox.
+series_folder_name_options: list = ['PatientID', 'PatientName', 'SeriesInstanceUID']
+
+# Default selection for series_folder_name_options.
+series_folder_name_default: str = 'PatientID'
+
+# Default number of worker processes shown pre-filled in the Run step's
+# "Worker processes" number_input; clamped to [1, os.cpu_count()] by the UI
+# since a restored session may have been saved on a different machine.
+anon_max_workers: int = 4
+
+# Minimum total file count (summed across all series) before the Run step
+# anonymizes in parallel; smaller jobs run sequentially in-process (spawning
+# worker processes costs ~1-2s, not worth it for small jobs).
+anon_parallel_threshold: int = 200

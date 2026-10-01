@@ -74,21 +74,36 @@ All defaults are in `application/app_settings/config.py`:
 | `tags_2_spare` | Tags never modified, even if their VR type is selected |
 | `vr_type_options` / `vr_type_defaults` | VR types available/selected by default for blanking |
 | `new_tags` | Tags to create if missing from a file |
+| `output_layout_options` / `output_layout_default` | Output layout keys (`mirror`/`by_tag`/`per_series`) and their UI labels; default layout |
+| `series_folder_name_options` / `series_folder_name_default` | Tags offered by the `per_series` layout's "Folder name from" selectbox; default tag |
+| `anon_max_workers` | Default worker process count pre-filled in the "Worker processes" setting |
+| `anon_parallel_threshold` | Minimum total file count before the Run step anonymizes in parallel; smaller jobs run in a single process |
 
 ## Anonymization Settings (UI)
 
 Accessible via the **⚙ Anonymization settings** expander before Run:
 
 - **Skip unmatched cases** — exclude cases absent from the uploaded CSV entirely (not copied to output).
-- **Organize output by tag** — use the anonymized value of a chosen tag as a top-level subfolder, replacing the original directory structure (avoids PII embedded in folder names). Series are placed in sequentially numbered subdirectories (`series_001`, `series_002`, …).
+- **Output layout** — one of:
+  - **Mirror original directory structure** (default) — see "Output" below.
+  - **Organize by tag value** — use the anonymized value of a chosen tag as a top-level subfolder, replacing the original directory structure (avoids PII embedded in folder names). Series are placed in sequentially numbered subdirectories (`series_001`, `series_002`, …).
+  - **One folder per series** — each series gets its own output folder named after the anonymized value of a chosen tag (`PatientID`, `PatientName`, or `SeriesInstanceUID`). Series whose anonymized value is empty/missing are placed under `Nameless`; if two or more series would share the same folder name, each is placed in an extra subfolder named after its Series Description.
+- **Worker processes** — how many worker processes anonymize series in parallel during Run. Each worker anonymizes one series (all of its files) at a time. Defaults to `anon_max_workers` (clamped to the machine's CPU count). Small jobs — fewer than `anon_parallel_threshold` files in total — always run in a single process regardless of this setting, since starting worker processes has its own overhead. If any files fail (e.g. a corrupt source file), the Run summary reports the failure count with an expandable list of `file — error`; the rest of the run still completes.
 - **VR types to anonymize** — checkboxes for each DICOM Value Representation; checked types have their values replaced with `"Anonymized"`.
 - **Additional tags to spare** — hex tag pairs in `(XXXX|XXXX)` format that are never modified regardless of VR type.
 
 ## Output
 
-Anonymized files are written to `<input_folder>-Anonymized/`. The original files are not modified.
+Anonymized files are written to `<input_folder>-Anonymized/` by default (or to the folder entered under "Output folder"). The original files are not modified.
 
-When **Organize output by tag** is enabled, the structure is:
+**Mirror original directory structure** (default) — the original subdirectory structure is mirrored under the output root:
+```
+<input_folder>-Anonymized/
+  Pt001/Study1/SE3/
+    file.dcm
+```
+
+**Organize by tag value**:
 ```
 <input_folder>-Anonymized/
   <tag_value>/
@@ -98,7 +113,17 @@ When **Organize output by tag** is enabled, the structure is:
       file.dcm
 ```
 
-Otherwise the original subdirectory structure is mirrored under the output root.
+**One folder per series** — one folder per series, named after the chosen tag's anonymized value. A series with no usable value goes under `Nameless`; if a name is shared by more than one series, each gets an extra subfolder named after its Series Description (or, if that series has no Series Description, its files go directly into the shared name folder):
+```
+<input_folder>-Anonymized/
+  P001/
+    file.dcm
+  Nameless/
+    CT Chest/
+      file.dcm
+    MRI Brain/
+      file.dcm
+```
 
 ## Creating a Binary Executable (Windows)
 

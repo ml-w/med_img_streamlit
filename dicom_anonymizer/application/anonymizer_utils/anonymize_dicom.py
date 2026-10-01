@@ -2,7 +2,6 @@ import os
 import re
 import fnmatch
 import pydicom
-from pydicom.errors import InvalidDicomError
 from pydicom import *
 from pathlib import Path
 from typing import Any, Optional
@@ -12,7 +11,8 @@ import streamlit
 from streamlit import logger
 import functools
 import multiprocessing
-from concurrent.futures import ProcessPoolExecutor
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 def _read_tags(path: str, tags: list[str]) -> tuple[str, Optional[dict], Optional[str]]:
@@ -51,12 +51,15 @@ def find_files(folder_dir: Path, fformat: str) -> list[Path]:
     Returns:
         list[Path]: Matching file paths.
     """
-    return [
+    logger.get_logger('anonymizer').info(f"Scanning {folder_dir} for files matching '{fformat}'")
+    files = [
         Path(dirpath) / fname
         for dirpath, _, filenames in os.walk(folder_dir, followlinks=True)
         for fname in filenames
         if fnmatch.fnmatch(fname, fformat)
     ]
+    logger.get_logger('anonymizer').info(f"Found {len(files)} file(s) matching '{fformat}' under {folder_dir}")
+    return files
 
 def create_output_dir(file_dir: str | Path, folder_dir: Path) -> str:
     """
@@ -69,7 +72,9 @@ def create_output_dir(file_dir: str | Path, folder_dir: Path) -> str:
     Returns:
         str: A string which represents the output file path. 
     """
-    return str(file_dir).replace(str(folder_dir), str(folder_dir.parent / f"{folder_dir.name}-Anonymized"))
+    out_dir = str(file_dir).replace(str(folder_dir), str(folder_dir.parent / f"{folder_dir.name}-Anonymized"))
+    logger.get_logger('anonymizer').debug(f"Output dir for {file_dir}: {out_dir}")
+    return out_dir
 
 def create_dcm_df(
     folder: str,
@@ -134,6 +139,10 @@ def create_dcm_df(
         str_paths = [str(fd) for fd in file_dirs]
         worker = functools.partial(_read_tags, tags=all_tags)
         use_parallel = n_files >= parallel_threshold and max_workers > 1
+        logger.get_logger('anonymizer').debug(
+            f"Header scan: {n_files} file(s), threshold={parallel_threshold}, max_workers={max_workers} -> "
+            f"{'parallel' if use_parallel else 'sequential'}"
+        )
         last_pct = 10
 
         executor = None
@@ -227,8 +236,7 @@ def create_dcm_df(
     if not df is None:
         df['PK'] = df[unique_ids].astype(str).agg('_'.join, axis=1)
         df.set_index('PK', inplace=True)
-    else:
-        logger.get_logger('anonymizer').error("Something wrong, nothing is globbed")
+        logger.get_logger('anonymizer').debug(f"Built DataFrame with {len(df)} row(s) and {len(df.columns)} column(s)")
     return df
 
 def consolidate_tags(row: pd.Series, update_tags: dict) -> dict: 
@@ -262,6 +270,9 @@ def consolidate_tags(row: pd.Series, update_tags: dict) -> dict:
         if pd.notna(value) and value != '':
             update[tag_dict[dcm_tag]] = value
 
+    logger.get_logger('anonymizer').debug(
+        f"Consolidated {len(update)} tag update(s) from {len(update_tags)} candidate(s): {sorted(str(t) for t in update)}"
+    )
     return update
 
 def remove_info(dataset: Dataset,
@@ -354,10 +365,17 @@ def anonymize(file_dir: str,
         va_type (list of str, optional): VR types whose values are replaced with "Anonymized". If None, defaults to ["PN", "LO", "SH", "AE", "DT", "DA"].
         update (dict, optional): A dictionary of tags and their new values for updates.
         tags_2_spare (list, optional): Tags that should not be modified.
-        tags_2_create (list, optional): Tags to be created.
+        tags_2_create (dict, optional): Tags to be created. ``None`` is treated as ``{}``.
 
     Returns:
         int: Returns 0 upon successful processing.
+
+    Raises:
+        Exception: Any error reading, walking, or writing the file (e.g.
+            ``pydicom.errors.InvalidDicomError``, ``OSError``) propagates to the
+            caller instead of being swallowed — callers that process many files
+            (e.g. ``_anonymize_series``) catch per-file so one bad file doesn't
+            abort the rest.
     """
     # Default VR types to anonymize
     if va_type is None:
@@ -373,28 +391,184 @@ def anonymize(file_dir: str,
             # package (e.g. from tests), where app_settings isn't a top-level module.
             from ..app_settings.config import default_tags_2_anon
         tags = default_tags_2_anon
-    try:
-        f = pydicom.dcmread(str(file_dir))
 
-        # Remove and update tags
-        f.remove_private_tags()
-        f.walk(lambda x1, x2: remove_info(
-            x1, x2,
-            tags=tags,
-            va_type=va_type,
-            update=update,
-            tags_2_spare=tags_2_spare,
-            extra_tags_2_anon=extra_tags_2_anon,
-            regex_pattern=regex_pattern,
-        ))
-        
-        # Create new tags
-        for dcm_tag, value in tags_2_create.items():
-            setattr(f, dcm_tag, value)
-        
-        # Write files
-        Path(output_dir).parent.mkdir(parents=True, exist_ok=True)
-        f.save_as(output_dir)
-    except InvalidDicomError:
-        print(f"Error when reading: {f}")
+    f = pydicom.dcmread(str(file_dir))
+
+    # Remove and update tags
+    f.remove_private_tags()
+    f.walk(lambda x1, x2: remove_info(
+        x1, x2,
+        tags=tags,
+        va_type=va_type,
+        update=update,
+        tags_2_spare=tags_2_spare,
+        extra_tags_2_anon=extra_tags_2_anon,
+        regex_pattern=regex_pattern,
+    ))
+
+    # Create new tags
+    for dcm_tag, value in (tags_2_create or {}).items():
+        setattr(f, dcm_tag, value)
+
+    # Write files
+    Path(output_dir).parent.mkdir(parents=True, exist_ok=True)
+    f.save_as(output_dir)
     return 0
+
+
+def _anonymize_series(
+    task: tuple,
+    *,
+    tags: Optional[list],
+    va_type: Optional[list],
+    tags_2_spare: Optional[list],
+    tags_2_create: Optional[dict],
+    extra_tags_2_anon: Optional[list],
+    regex_pattern: Optional[str],
+) -> tuple[str, int, list[tuple[str, str]]]:
+    """
+    Worker: anonymizes every file belonging to one series. Module-level and
+    Streamlit/logging-free so it can be pickled and run in a subprocess (same
+    constraints as ``_read_tags``).
+
+    Args:
+        task: ``(series_key, [(src_path, dst_path, update_dict), ...])``.
+        tags, va_type, tags_2_spare, tags_2_create, extra_tags_2_anon, regex_pattern:
+            forwarded as-is to ``anonymize()`` for every file in the series.
+            ``tags`` is always passed explicitly (never ``None``) so the worker
+            never hits ``anonymize()``'s own config-import fallback, which would
+            re-import ``app_settings.config`` in every subprocess.
+
+    Returns:
+        tuple[str, int, list[tuple[str, str]]]: ``(series_key, n_ok, errors)``
+            where ``errors`` is a list of ``(src_path, repr(exception))`` for
+            files that failed -- one bad file does not abort the rest of the
+            series.
+    """
+    series_key, files = task
+    n_ok = 0
+    errors: list[tuple[str, str]] = []
+    for src_path, dst_path, update in files:
+        try:
+            anonymize(
+                file_dir=src_path,
+                output_dir=dst_path,
+                tags=tags,
+                va_type=va_type,
+                update=update,
+                tags_2_spare=tags_2_spare,
+                tags_2_create=tags_2_create,
+                extra_tags_2_anon=extra_tags_2_anon,
+                regex_pattern=regex_pattern,
+            )
+            n_ok += 1
+        except Exception as e:
+            errors.append((src_path, repr(e)))
+    return series_key, n_ok, errors
+
+
+def run_anonymization(
+    tasks: list,
+    settings: dict,
+    max_workers: int,
+    parallel_threshold: int,
+    on_progress: Optional[Any] = None,
+) -> tuple[int, list[tuple[str, str]]]:
+    """
+    Anonymizes a list of per-series tasks, one series at a time per worker,
+    optionally in parallel across series.
+
+    Args:
+        tasks (list): One entry per series:
+            ``(series_key, [(src_path, dst_path, update_dict), ...])``. Target
+            paths are expected to already be planned and unique (see
+            ``ui_utils.ui_logic.plan_output_paths``), so the completion order
+            of parallel tasks doesn't matter.
+        settings (dict): kwargs forwarded to ``_anonymize_series``/``anonymize()``
+            for every file: ``tags``, ``va_type``, ``tags_2_spare``,
+            ``tags_2_create``, ``extra_tags_2_anon``, ``regex_pattern``.
+        max_workers (int): Worker processes to use.
+        parallel_threshold (int): Minimum total file count (summed across all
+            tasks) before the process pool is used; below it (and with a
+            single task, or ``max_workers <= 1``), tasks run sequentially in
+            the main process -- spawning workers costs ~1-2s, not worth it for
+            small jobs.
+        on_progress (callable, optional): ``on_progress(done_files, total_files,
+            series_key)``, called in the main process once a series finishes.
+
+    Returns:
+        tuple[int, list[tuple[str, str]]]: ``(total_ok, all_errors)`` --
+            ``total_ok`` is the number of successfully anonymized files across
+            all series; ``all_errors`` is a list of ``(src_path,
+            repr(exception))`` for every file that failed, including every file
+            of a task whose future itself raised (e.g. a broken worker
+            process).
+    """
+    total_files = sum(len(files) for _, files in tasks)
+    use_parallel = max_workers > 1 and total_files >= parallel_threshold and len(tasks) > 1
+    log = logger.get_logger('anonymizer')
+    start_time = time.perf_counter()
+    log.info(f"Starting anonymization: {total_files} file(s) in {len(tasks)} series task(s)")
+    log.debug(
+        f"Anonymization mode: {'parallel' if use_parallel else 'sequential'} "
+        f"(max_workers={max_workers}, parallel_threshold={parallel_threshold}, "
+        f"total_files={total_files}, tasks={len(tasks)})"
+    )
+    # NOTE: logging is done here in the main process only; the per-series worker
+    # (_anonymize_series / anonymize / remove_info) must stay logging-free because
+    # it runs in spawned subprocesses.
+
+    worker = functools.partial(_anonymize_series, **settings)
+
+    total_ok = 0
+    all_errors: list[tuple[str, str]] = []
+    done_files = 0
+
+    executor = None
+    try:
+        if use_parallel:
+            # spawn (not fork): forking the multi-threaded Streamlit server can deadlock
+            executor = ProcessPoolExecutor(
+                max_workers=min(max_workers, len(tasks)),
+                mp_context=multiprocessing.get_context('spawn'),
+            )
+            futures = {executor.submit(worker, task): task for task in tasks}
+            for future in as_completed(futures):
+                series_key, task_files = futures[future]
+                try:
+                    _, n_ok, errors = future.result()
+                except Exception as e:
+                    # e.g. a broken/killed worker process -- the whole task's
+                    # files are unaccounted for; report them all as failed
+                    # rather than silently dropping them or crashing the run.
+                    n_ok = 0
+                    errors = [(src_path, repr(e)) for src_path, _, _ in task_files]
+                total_ok += n_ok
+                all_errors.extend(errors)
+                done_files += len(task_files)
+                log.debug(f"Series {series_key}: {n_ok}/{len(task_files)} file(s) anonymized")
+                for src_path, err in errors:
+                    log.warning(f"Failed to anonymize {src_path}: {err.split('(')[0]}")
+                if on_progress is not None:
+                    on_progress(done_files, total_files, series_key)
+        else:
+            for task in tasks:
+                series_key, task_files = task
+                _, n_ok, errors = worker(task)
+                total_ok += n_ok
+                all_errors.extend(errors)
+                done_files += len(task_files)
+                log.debug(f"Series {series_key}: {n_ok}/{len(task_files)} file(s) anonymized")
+                for src_path, err in errors:
+                    log.warning(f"Failed to anonymize {src_path}: {err.split('(')[0]}")
+                if on_progress is not None:
+                    on_progress(done_files, total_files, series_key)
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    log.info(
+        f"Anonymization finished in {time.perf_counter() - start_time:.2f}s: "
+        f"{total_ok} succeeded, {len(all_errors)} failed, {total_files} total"
+    )
+    return total_ok, all_errors

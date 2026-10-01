@@ -1,3 +1,4 @@
+import os
 import re
 import streamlit as st
 import json
@@ -13,6 +14,7 @@ from app_settings.config import (
     pk_default,
     ref_tag_options,
     derived_display_options,
+    scan_extra_tags,
     update_tag_defaults,
     upload_df_id,
     tags_2_anon,
@@ -26,6 +28,12 @@ from app_settings.config import (
     default_update_tags,
     scan_max_workers,
     scan_parallel_threshold,
+    output_layout_options,
+    output_layout_default,
+    series_folder_name_options,
+    series_folder_name_default,
+    anon_max_workers,
+    anon_parallel_threshold,
 )
 
 # ---------------------------------------------------------------------------
@@ -36,14 +44,18 @@ SESSION_EXCLUDE = {"dcm_info", "uids", "edit_df", "upload_file"}
 
 
 def _load_session():
+    logger.debug("Loading session from %s", SESSION_FILE)
     if SESSION_FILE.exists():
         try:
             with SESSION_FILE.open("r") as f:
                 data = json.load(f)
             for k, v in data.items():
                 st.session_state.setdefault(k, v)
-        except Exception:
-            pass
+            logger.debug("Session loaded: %d key(s) in file", len(data))
+        except Exception as e:
+            logger.warning("Failed to load session file %s: %r", SESSION_FILE, e)
+    else:
+        logger.debug("No session file found at %s", SESSION_FILE)
 
 
 def _save_session():
@@ -51,21 +63,43 @@ def _save_session():
             if k not in SESSION_EXCLUDE and not isinstance(v, pd.DataFrame)}
     if isinstance(data.get('folder'), str):
         data['folder'] = data['folder'].replace('\\', '/')
+    logger.debug("Saving session (%d key(s)) to %s", len(data), SESSION_FILE)
     try:
         with SESSION_FILE.open("w") as f:
             json.dump(data, f)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Failed to save session file %s: %r", SESSION_FILE, e)
 
 
 def _parse_spare_tags(text: str) -> list:
     """Parse a tag string like '(0008|1030),(0010|0020)' into a list of (group, element) tuples."""
     matches = re.findall(r'\(([0-9A-Fa-f]{4})\|([0-9A-Fa-f]{4})\)', text)
-    return [(int(g, 16), int(e, 16)) for g, e in matches]
+    tags = [(int(g, 16), int(e, 16)) for g, e in matches]
+    logger.debug("Parsed %d tag(s) from %d-character input", len(tags), len(text))
+    return tags
 
 
 def streamlit_app():
+    # Reruns on every widget interaction, so keep this at debug level.
+    logger.debug("streamlit_app rerun")
     _load_session()
+
+    # One-time migration: a session restored from a .session.json saved before
+    # output_layout existed only has subfolder_tag. If that tag was set, carry
+    # the by_tag behaviour forward explicitly rather than silently reverting
+    # to mirror (output_layout's default).
+    if st.session_state.get('subfolder_tag') and 'output_layout' not in st.session_state:
+        st.session_state['output_layout'] = 'by_tag'
+        logger.info("Migrated legacy session: subfolder_tag=%s -> output_layout='by_tag'",
+                    st.session_state.get('subfolder_tag'))
+
+    cpu_count = os.cpu_count() or 1
+    # A restored anon_workers value may have been saved on a different machine
+    # (more/fewer CPUs) -- clamp it before the number_input widget renders,
+    # since Streamlit errors if a bound session value falls outside min/max.
+    if 'anon_workers' in st.session_state:
+        st.session_state['anon_workers'] = max(1, min(int(st.session_state['anon_workers']), cpu_count))
+        logger.debug("anon_workers clamped to %d (cpu_count=%d)", st.session_state['anon_workers'], cpu_count)
 
     defaults = {
         "folder": "",
@@ -86,7 +120,10 @@ def streamlit_app():
         "skip_unmatched": False,
         "unmatched_upload_ids": [],
         "subfolder_tag": "",
+        "output_layout": output_layout_default,
+        "series_name_tag": series_folder_name_default,
         "output_folder": "",
+        "anon_workers": min(anon_max_workers, cpu_count),
     }
     # Per-VR checkbox defaults (only applied once; session/JSON takes over after first run)
     for vr in vr_type_options:
@@ -142,7 +179,10 @@ def streamlit_app():
     if st.button('Fetch files', type='primary'):
         if not st.session_state.folder or not st.session_state.fformat:
             st.error(':warning: Please input file directory and file extension.')
+            logger.warning("Fetch clicked without folder and/or file extension")
         else:
+            logger.info("Fetch files clicked: folder=%s, fformat=%s, series_mode=True",
+                        folder, st.session_state.fformat)
             st.session_state.dcm_info = None
             st.session_state.pk_committed = False
             st.session_state.edit_df = None
@@ -151,7 +191,7 @@ def streamlit_app():
             with st.spinner(text='Fetching files...'):
                 progress_bar = st.progress(0, text="Initiating read...")
                 try:
-                    all_ref_tags = list(dict.fromkeys(ref_tag_options + list(update_tag_defaults.keys())))
+                    all_ref_tags = list(dict.fromkeys(ref_tag_options + scan_extra_tags + list(update_tag_defaults.keys())))
                     raw = create_dcm_df(
                         folder=folder,
                         fformat=st.session_state.fformat,
@@ -172,6 +212,7 @@ def streamlit_app():
                     # SeriesDir later against the right base even if the "folder" text
                     # input is edited afterwards without a re-fetch.
                     st.session_state.fetched_folder = folder
+                    logger.info("Fetch complete: %d file row(s) in dcm_info", len(st.session_state.dcm_info))
                 except Exception as e:
                     st.error(f':warning: We cannot find any files in the file extension in the directory.\nOriginal error: {e}')
                     logger.exception(e)
@@ -201,6 +242,7 @@ def streamlit_app():
         pk_columns = st.session_state.pk_columns
 
         if pk_columns != prev_pk_columns:
+            logger.debug("PK columns changed: %s -> %s", prev_pk_columns, pk_columns)
             st.session_state.selected_display_tags = []
             st.session_state.selected_update_tags = []
 
@@ -209,6 +251,7 @@ def streamlit_app():
         for col in pk_columns:
             if col in dcm_raw.columns and dcm_raw[col].isnull().any():
                 null_count = int(dcm_raw[col].isnull().sum())
+                logger.debug("PK column %s missing in %d row(s)", col, null_count)
                 st.warning(f':warning: **{col}** is missing in {null_count} series — may cause PK collisions.')
 
         # Live preview
@@ -229,6 +272,7 @@ def streamlit_app():
             # For multi-column PKs a new column named 'ColA__ColB__...' is added
             # whose values are the row values joined with '__'; this column becomes
             # the matcher for the rest of the session.
+            logger.info("Confirm PK clicked: pk_columns=%s", pk_columns)
             dcm = st.session_state.dcm_info.reset_index(drop=True).copy()
             if len(pk_columns) == 1:
                 pk_col_name = pk_columns[0]
@@ -240,6 +284,8 @@ def streamlit_app():
             st.session_state.dcm_info = dcm
             st.session_state.pk_committed = True
             st.session_state.matcher_id = pk_col_name
+            logger.info("PK committed: matcher column=%s, %d unique PK(s) across %d row(s)",
+                        pk_col_name, dcm.index.nunique(), len(dcm))
             st.session_state.selected_display_tags = []
             st.session_state.selected_update_tags = []
             st.rerun()
@@ -269,6 +315,7 @@ def streamlit_app():
             # once. If the user later deselects it, the flag below stops it from
             # being re-added.
             st.session_state.selected_display_tags = st.session_state.selected_display_tags + ['SeriesDir']
+            logger.debug("SeriesDir migration: added 'SeriesDir' to selected_display_tags")
         st.session_state.series_dir_default_applied = True
 
         if not st.session_state.selected_update_tags:
@@ -276,8 +323,14 @@ def streamlit_app():
 
         @st.fragment
         def _column_selection():
+            prev_display = list(st.session_state.selected_display_tags)
+            prev_update = list(st.session_state.selected_update_tags)
             st.multiselect('Select columns to display', display_options, key='selected_display_tags')
             st.multiselect('Select columns to update', list(update_tag_defaults.keys()), key='selected_update_tags')
+            if st.session_state.selected_display_tags != prev_display:
+                logger.debug("Display columns changed: %s", st.session_state.selected_display_tags)
+            if st.session_state.selected_update_tags != prev_update:
+                logger.debug("Update columns changed: %s", st.session_state.selected_update_tags)
 
         _column_selection()
 
@@ -291,6 +344,7 @@ def streamlit_app():
         # instead of silently dropping the column below. Re-fetching isn't required.
         if 'SeriesDir' in active_ref_tags and 'SeriesDir' not in st.session_state.dcm_info.columns:
             root_folder = st.session_state.fetched_folder or folder
+            logger.debug("SeriesDir missing from dcm_info; re-deriving against %s", root_folder)
             st.session_state.dcm_info = add_series_dir(st.session_state.dcm_info, root_folder)
 
         # Ensure the matcher column is always included so it appears in edit_df and the CSV template.
@@ -332,6 +386,7 @@ def streamlit_app():
         if upload_file is not None:
             file_extension = Path(upload_file.name).suffix
             readfile_error = False
+            logger.info("CSV upload: filename=%s", upload_file.name)
             try:
                 if file_extension == '.csv':
                     upload_df = pd.read_csv(upload_file)
@@ -339,7 +394,11 @@ def streamlit_app():
                     upload_df = pd.read_excel(upload_file)
                 else:
                     upload_error.error(':warning: Error in uploaded file: Unsupported file type.')
-            except Exception:
+                    logger.warning("Upload rejected: unsupported file extension %r", file_extension)
+                if file_extension in ['.csv', '.xls', '.xlsx']:
+                    logger.info("Upload parsed: %d row(s), %d column(s)", len(upload_df), len(upload_df.columns))
+            except Exception as e:
+                logger.exception(e)
                 upload_error.error(':warning: Error: Unable to read uploaded file. Please input your updates in the template and upload again.')
                 readfile_error = True
 
@@ -347,6 +406,7 @@ def streamlit_app():
                 error_message = validate_upload(st.session_state.edit_df, upload_df, active_update_tags, active_upload_df_id)
                 if error_message:
                     st.error(error_message)
+                    logger.warning("Upload validation failed: %s", error_message)
                 else:
                     upload_df = upload_df.fillna('').astype(str)
                     try:
@@ -354,6 +414,7 @@ def streamlit_app():
                         st.session_state.edit_df = edit_df
                         unmatched = check_unmatched_rows(upload_df, edit_df, active_upload_df_id)
                         st.session_state.unmatched_upload_ids = unmatched
+                        logger.info("Upload applied: %d unmatched case(s) on %s", len(unmatched), active_upload_df_id)
                         if unmatched:
                             skip_note = 'Enable **Skip unmatched cases** in Anonymization settings to exclude them.' if not st.session_state.skip_unmatched else 'These cases will be **skipped** (not copied to output).'
                             upload_error.warning(
@@ -362,6 +423,7 @@ def streamlit_app():
                             with st.expander(f'Show {len(unmatched)} unmatched {active_upload_df_id} value(s)'):
                                 st.write(', '.join(map(str, unmatched)))
                     except Exception:
+                        logger.exception("Failed to apply uploaded updates")
                         upload_error.error(':warning: Error: Unable to read uploaded file. Please input your updates in the template and upload again.')
         else:
             st.session_state.unmatched_upload_ids = []
@@ -394,9 +456,52 @@ def streamlit_app():
                     """
                 )
                 tags_2_create[dcm_tag] = create_new_tag.selectbox(f'Please select a value for DICOM Tag: `{dcm_tag}`.', options)
+                logger.info("Tag %s missing in %d %s value(s); it will be created on anonymization",
+                            dcm_tag, len(notag_ids), active_upload_df_id)
 
         # ─── Anonymization settings (collapsed) ──────────────────────────────────
         with st.expander(':gear: **Anonymization settings**', expanded=False):
+            # The layout radio and its dependent selectbox live OUTSIDE the form below:
+            # widgets inside st.form don't rerun the script until submit, so a
+            # dependent selectbox placed inside the form wouldn't appear/update until
+            # after an extra "Apply" click.
+            st.radio(
+                'Output layout',
+                options=list(output_layout_options.keys()),
+                format_func=lambda k: output_layout_options[k],
+                key='output_layout',
+                help='How anonymized files are organized under the output folder.',
+            )
+
+            if st.session_state.output_layout == 'by_tag':
+                subfolder_options = [c for c in active_unique_ids if c in st.session_state.dcm_info.columns]
+                if subfolder_options and st.session_state.subfolder_tag not in subfolder_options:
+                    st.session_state.subfolder_tag = subfolder_options[0]
+                st.selectbox(
+                    'Organize output into subfolders by tag',
+                    options=subfolder_options,
+                    key='subfolder_tag',
+                    help='The anonymized value of the chosen tag is used as a top-level subfolder under the output root, '
+                        'replacing the original directory structure. Use an Update_ tag value to avoid PII in output paths.',
+                )
+            elif st.session_state.output_layout == 'per_series':
+                st.selectbox(
+                    'Folder name from',
+                    options=series_folder_name_options,
+                    key='series_name_tag',
+                    help='Each series gets its own output folder named after its anonymized (Update_) value for the '
+                        'chosen tag. Series with an empty/missing anonymized value are placed under '
+                        f'"{NAMELESS_DIR}". If two or more series would share the same folder name, each is placed '
+                        'in an additional subfolder named after its Series Description.',
+                )
+                if st.session_state.series_name_tag in ('PatientID', 'PatientName') \
+                        and st.session_state.series_name_tag not in st.session_state.selected_update_tags:
+                    st.warning(
+                        f':warning: **{st.session_state.series_name_tag}** is not selected under "Select columns to '
+                        f'update" above — its anonymized value will always be empty, so all series will be placed '
+                        f'under "{NAMELESS_DIR}".'
+                    )
+
             with st.form('Anonymization setting form'):
                 st.checkbox(
                     'Skip unmatched cases — exclude cases not found in uploaded file from the output entirely',
@@ -404,21 +509,22 @@ def streamlit_app():
                     help='When enabled, any case whose matcher ID is absent from the uploaded CSV will not be anonymized or copied to the output directory.',
                 )
                 st.divider()
-                subfolder_options = [''] + [c for c in active_unique_ids if c in st.session_state.dcm_info.columns]
-                st.selectbox(
-                    'Organize output into subfolders by tag',
-                    options=subfolder_options,
-                    format_func=lambda x: '(mirror original directory structure)' if x == '' else x,
-                    key='subfolder_tag',
-                    help='When set, the anonymized value of the chosen tag is used as a top-level subfolder under the output root, '
-                        'replacing the original directory structure. Use an Update_ tag value to avoid PII in output paths.',
-                )
-                st.divider()
                 st.text_input(
                     'Output folder',
                     key='output_folder',
                     placeholder=f'{str(Path(folder))}-Anonymized',
                     help='Destination folder for anonymized files. Leave blank to use the default: the input folder with "-Anonymized" appended.',
+                )
+                st.divider()
+                st.number_input(
+                    'Worker processes',
+                    key='anon_workers',
+                    min_value=1,
+                    max_value=cpu_count,
+                    step=1,
+                    help='Each worker process anonymizes one series at a time, in parallel with the others. '
+                        f'Small jobs (fewer than {anon_parallel_threshold} files) always run in a single '
+                        'process regardless of this setting, since starting worker processes has its own overhead.',
                 )
                 st.divider()
                 st.caption('**VR types to anonymize** — all data elements with these Value Representations '
@@ -498,8 +604,10 @@ def streamlit_app():
                 active_regex_pattern = None
 
         if st.button("Run", type='primary'):
+            logger.info("Run clicked")
             if st.session_state.get('dcm_info') is None or st.session_state.get('edit_df') is None:
                 st.warning(':warning: Please fetch files and provide updates before file anonymization.')
+                logger.warning("Run aborted: dcm_info or edit_df missing")
             else:
                 # Join on PK index: dcm_info (all series rows, PK index, may be non-unique for
                 # coarse PKs) × edit_df (one row per PK). Each series directory gets the update
@@ -507,8 +615,13 @@ def streamlit_app():
                 dcm_copy = st.session_state.dcm_info.copy()
                 if st.session_state.skip_unmatched and st.session_state.unmatched_upload_ids:
                     unmatched_set = set(map(str, st.session_state.unmatched_upload_ids))
+                    n_before = len(dcm_copy)
                     dcm_copy = dcm_copy[~dcm_copy[active_upload_df_id].astype(str).isin(unmatched_set)]
+                    logger.info("skip_unmatched: excluded %d of %d file row(s) from %d unmatched case(s)",
+                                n_before - len(dcm_copy), n_before, len(unmatched_set))
+                output_layout = st.session_state.output_layout
                 subfolder_tag = st.session_state.subfolder_tag
+                series_name_tag = st.session_state.series_name_tag
                 # dcm_info has one row per DICOM file (file_path column, no dedup).
                 # Select only the columns needed for the Run step, then join with edit_df
                 # (one row per PK) on the PK index. Each file row gets the update values
@@ -518,63 +631,95 @@ def streamlit_app():
                     dir_cols.append(subfolder_tag)
                 if 'SeriesInstanceUID' in dcm_copy.columns and 'SeriesInstanceUID' not in dir_cols:
                     dir_cols.append('SeriesInstanceUID')
+                if 'SeriesDescription' in dcm_copy.columns and 'SeriesDescription' not in dir_cols:
+                    dir_cols.append('SeriesDescription')
                 anon_dcm_df = dcm_copy[dir_cols].join(
                     st.session_state.edit_df.filter(like='Update_', axis=1)
                 )
 
-                with st.spinner(text='Creating anonymized files...'):
-                    base_output = st.session_state.output_folder.strip() or f"{str(Path(folder))}-Anonymized"
-                    total_files = len(anon_dcm_df)
-                    processed = 0
-                    progress_bar = st.progress(0, text="Initiating anonymization...")
+                base_output = st.session_state.output_folder.strip() or f"{str(Path(folder))}-Anonymized"
+                logger.info("Output layout=%s, base output dir=%s", output_layout, base_output)
+                planned_df = plan_output_paths(
+                    anon_dcm_df,
+                    layout=output_layout,
+                    base_output=base_output,
+                    subfolder_tag=subfolder_tag,
+                    series_name_tag=series_name_tag,
+                )
 
-                    # Pre-compute series index per (subfolder_val, SeriesInstanceUID) so
-                    # that files from different series sharing the same subfolder_val are
-                    # written into distinct series_001/, series_002/, … subdirectories.
-                    if subfolder_tag:
-                        from collections import defaultdict
-                        _subfolder_counters: dict = defaultdict(int)
-                        _series_map: dict = {}
-                        for _, _row in anon_dcm_df.iterrows():
-                            _update_col = f'Update_{subfolder_tag}'
-                            _sfval = str(_row.get(_update_col, '') or _row.get(subfolder_tag, '') or 'Unknown').strip() or 'Unknown'
-                            _series_uid = str(_row.get('SeriesInstanceUID', ''))
-                            _key = (_sfval, _series_uid)
-                            if _key not in _series_map:
-                                _subfolder_counters[_sfval] += 1
-                                _series_map[_key] = _subfolder_counters[_sfval]
-
-                    for _, row in anon_dcm_df.iterrows():
-                        file_path = Path(row['file_path'])
-                        if subfolder_tag:
-                            update_col = f'Update_{subfolder_tag}'
-                            subfolder_val = str(row.get(update_col, '') or row.get(subfolder_tag, '') or 'Unknown').strip() or 'Unknown'
-                            series_uid = str(row.get('SeriesInstanceUID', ''))
-                            series_idx = _series_map[(subfolder_val, series_uid)]
-                            output_dir = str(Path(base_output) / subfolder_val / f"series_{series_idx:03d}" / file_path.name)
-                        else:
-                            output_dir = f"{row['output_dir']}/{file_path.name}"
-                        update = consolidate_tags(row, active_update_tags)
-                        logger.get_logger('streamlit').debug(f"Anonymizing {file_path} -> {output_dir}")
-                        anonymize(
-                            file_dir=file_path,
-                            output_dir=output_dir,
-                            tags=effective_tags_2_anon,
-                            va_type=active_va_types,
-                            update=update,
-                            tags_2_spare=effective_tags_2_spare,
-                            tags_2_create=tags_2_create,
-                            extra_tags_2_anon=effective_extra_tags_2_anon or None,
-                            regex_pattern=active_regex_pattern,
+                if output_layout == 'per_series':
+                    nameless_count = count_nameless_series(planned_df, base_output)
+                    logger.debug("Nameless series count: %d", nameless_count)
+                    if nameless_count:
+                        st.warning(
+                            f':warning: {nameless_count} series had no usable anonymized "{series_name_tag}" '
+                            f'value and were placed under "{NAMELESS_DIR}".'
                         )
-                        processed += 1
-                        progress_bar.progress(processed / total_files, text=f"Anonymizing: {file_path}")
 
+                # Group the planned rows into one task per series (first-appearance
+                # order), each carrying its own files' (src, dst, update) triples.
+                # run_anonymization() dispatches one task per worker; target paths
+                # are already planned and unique, so completion order doesn't matter.
+                series_order: list = []
+                series_files: dict = {}
+                for _, row in planned_df.iterrows():
+                    series_key = row['series_key']
+                    if series_key not in series_files:
+                        series_files[series_key] = []
+                        series_order.append(series_key)
+                    update = consolidate_tags(row, active_update_tags)
+                    series_files[series_key].append((str(row['file_path']), row['target_path'], update))
+                tasks = [(series_key, series_files[series_key]) for series_key in series_order]
+                logger.debug("Grouped %d file(s) into %d series task(s)", len(planned_df), len(tasks))
+
+                anon_settings = dict(
+                    tags=effective_tags_2_anon,
+                    va_type=active_va_types,
+                    tags_2_spare=effective_tags_2_spare,
+                    tags_2_create=tags_2_create,
+                    extra_tags_2_anon=effective_extra_tags_2_anon or None,
+                    regex_pattern=active_regex_pattern,
+                )
+
+                total_files = len(planned_df)
+                total_series = len(tasks)
+                progress_bar = st.progress(0, text="Initiating anonymization...")
+                series_completed = [0]  # mutable counter for the on_progress closure
+
+                def _on_progress(done_files, total, series_key):
+                    series_completed[0] += 1
+                    logger.debug(
+                        f"Anonymized series {series_completed[0]}/{total_series} "
+                        f"({series_key}): {done_files}/{total} files"
+                    )
+                    progress_bar.progress(
+                        done_files / total if total else 1.0,
+                        text=f"Anonymized series {series_completed[0]}/{total_series} ({done_files}/{total} files)",
+                    )
+
+                logger.info("Calling run_anonymization: %d file(s), %d series, workers=%d",
+                            total_files, total_series, int(st.session_state.anon_workers))
+                with st.spinner(text='Creating anonymized files...'):
+                    total_ok, run_errors = run_anonymization(
+                        tasks,
+                        anon_settings,
+                        max_workers=int(st.session_state.anon_workers),
+                        parallel_threshold=anon_parallel_threshold,
+                        on_progress=_on_progress,
+                    )
                     progress_bar.progress(1.0, text="Anonymization complete")
 
+                logger.info("Run complete: %d succeeded, %d failed, output=%s", total_ok, len(run_errors), base_output)
+                st.success(f':star2: {total_ok} file(s) anonymized successfully.')
+                if run_errors:
+                    st.warning(f':warning: {len(run_errors)} file(s) failed to anonymize.')
+                    with st.expander(f'Show {len(run_errors)} failed file(s)'):
+                        for src, err in run_errors:
+                            st.write(f'{src} — {err}')
+
                 st.write(f"""
-                        :star2: Anonymized files are written in:
-                        :open_file_folder: :blue[{base_output}]
+                        :open_file_folder: Anonymized files are written in:
+                        :blue[{base_output}]
                         """)
 
     _save_session()
