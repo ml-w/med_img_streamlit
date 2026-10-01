@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import pandas as pd
+import pytest
 from pydicom.dataset import Dataset, FileDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 from pydicom.tag import Tag
@@ -16,6 +17,8 @@ from dicom_anonymizer.application.anonymizer_utils.anonymize_dicom import (
     consolidate_tags,
     remove_info,
     anonymize,
+    _anonymize_series,
+    run_anonymization,
 )
 from dicom_anonymizer.application.app_settings.config import default_tags_2_anon
 from dicom_anonymizer.application.ui_utils.ui_logic import compute_effective_tags_2_anon, add_series_dir
@@ -354,6 +357,187 @@ def test_anonymize_unselected_update_tag_falls_back_to_vr_pass(tmp_path):
     out = pydicom.dcmread(str(dst))
     assert out.PatientName == "Anonymized"  # VR pass, not blanked to ""
     assert out.PatientID == ""              # still in the blank list
+
+
+def test_anonymize_invalid_dicom_raises(tmp_path):
+    """
+    Regression test: anonymize() used to swallow read failures with
+    ``except InvalidDicomError: print(f"Error when reading: {f}")``, which
+    referenced ``f`` before it was ever assigned (dcmread raised before the
+    assignment completed) -- an UnboundLocalError masking the real error.
+    anonymize() now lets the error propagate so callers (_anonymize_series)
+    can catch and report it per file.
+    """
+    src = tmp_path / "bad.dcm"
+    src.write_text("not a dicom file")
+    dst = tmp_path / "out" / "bad.dcm"
+
+    with pytest.raises(Exception):
+        anonymize(str(src), str(dst), tags=[], va_type=[], tags_2_spare=[], tags_2_create={})
+
+
+def test_anonymize_tags_2_create_none_does_not_crash(tmp_path):
+    """tags_2_create=None must be treated as {} rather than crashing on .items()."""
+    src = tmp_path / "in.dcm"
+    dst = tmp_path / "out" / "anon.dcm"
+    dst.parent.mkdir()
+    _create_test_dicom(src)
+
+    anonymize(str(src), str(dst), tags=[], va_type=[], tags_2_spare=[], tags_2_create=None)
+    assert dst.exists()
+
+
+# ---------------------------------------------------------------------------
+# _anonymize_series
+# ---------------------------------------------------------------------------
+
+def _default_settings(**overrides):
+    settings = dict(
+        tags=default_tags_2_anon,
+        va_type=["PN"],
+        tags_2_spare=[],
+        tags_2_create={},
+        extra_tags_2_anon=None,
+        regex_pattern=None,
+    )
+    settings.update(overrides)
+    return settings
+
+
+def test_anonymize_series_happy_path(tmp_path):
+    src1 = tmp_path / "a.dcm"
+    src2 = tmp_path / "b.dcm"
+    _create_test_dicom(src1, patient_id="P001")
+    _create_test_dicom(src2, patient_id="P001")
+    dst1 = tmp_path / "out" / "a.dcm"
+    dst2 = tmp_path / "out" / "b.dcm"
+
+    task = (
+        "series1",
+        [
+            (str(src1), str(dst1), {Tag((0x0010, 0x0010)): "Anon"}),
+            (str(src2), str(dst2), {}),
+        ],
+    )
+    series_key, n_ok, errors = _anonymize_series(task, **_default_settings())
+
+    assert series_key == "series1"
+    assert n_ok == 2
+    assert errors == []
+    out1 = pydicom.dcmread(str(dst1))
+    assert out1.PatientName == "Anon"
+    assert dst2.exists()
+
+
+def test_anonymize_series_corrupt_file_reported_others_still_written(tmp_path):
+    """One bad file in a series must not abort the rest -- it's reported as an
+    error and the remaining files in the series are still anonymized."""
+    good1 = tmp_path / "good1.dcm"
+    good2 = tmp_path / "good2.dcm"
+    bad = tmp_path / "bad.dcm"
+    _create_test_dicom(good1, patient_id="P001")
+    _create_test_dicom(good2, patient_id="P001")
+    bad.write_text("not a dicom file")
+
+    dst_good1 = tmp_path / "out" / "good1.dcm"
+    dst_bad = tmp_path / "out" / "bad.dcm"
+    dst_good2 = tmp_path / "out" / "good2.dcm"
+
+    task = (
+        "series1",
+        [
+            (str(good1), str(dst_good1), {}),
+            (str(bad), str(dst_bad), {}),
+            (str(good2), str(dst_good2), {}),
+        ],
+    )
+    series_key, n_ok, errors = _anonymize_series(task, **_default_settings())
+
+    assert series_key == "series1"
+    assert n_ok == 2
+    assert len(errors) == 1
+    assert errors[0][0] == str(bad)
+    assert dst_good1.exists()
+    assert dst_good2.exists()
+    assert not dst_bad.exists()
+
+
+# ---------------------------------------------------------------------------
+# run_anonymization
+# ---------------------------------------------------------------------------
+
+def test_run_anonymization_parallel_matches_sequential(tmp_path):
+    """
+    Parallel (max_workers=2, parallel_threshold=0) and sequential
+    (max_workers=1) execution over the same series must produce byte-identical
+    output files -- mirrors test_create_dcm_df_series_mode_parallel_matches_sequential.
+    """
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    patient_ids = ["P001", "P002", "P003"]
+    for pid in patient_ids:
+        _create_test_dicom(src_dir / f"{pid}.dcm", patient_id=pid)
+
+    settings = _default_settings()
+
+    def _make_tasks(out_dir):
+        return [
+            (f"series-{pid}", [(str(src_dir / f"{pid}.dcm"), str(out_dir / f"{pid}.dcm"), {})])
+            for pid in patient_ids
+        ]
+
+    seq_out = tmp_path / "seq_out"
+    par_out = tmp_path / "par_out"
+    seq_out.mkdir()
+    par_out.mkdir()
+
+    total_ok_seq, errors_seq = run_anonymization(
+        _make_tasks(seq_out), settings, max_workers=1, parallel_threshold=10**9,
+    )
+    total_ok_par, errors_par = run_anonymization(
+        _make_tasks(par_out), settings, max_workers=2, parallel_threshold=0,
+    )
+
+    assert total_ok_seq == len(patient_ids)
+    assert total_ok_par == len(patient_ids)
+    assert errors_seq == []
+    assert errors_par == []
+
+    for pid in patient_ids:
+        seq_bytes = (seq_out / f"{pid}.dcm").read_bytes()
+        par_bytes = (par_out / f"{pid}.dcm").read_bytes()
+        assert seq_bytes == par_bytes
+
+
+def test_run_anonymization_on_progress_called_once_per_series(tmp_path):
+    """on_progress fires once per finished series (regardless of completion
+    order under the parallel path), with the final call's done == total."""
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    patient_ids = ["P001", "P002", "P003"]
+    for pid in patient_ids:
+        _create_test_dicom(src_dir / f"{pid}.dcm", patient_id=pid)
+
+    out_dir = tmp_path / "out"
+    tasks = [
+        (f"series-{pid}", [(str(src_dir / f"{pid}.dcm"), str(out_dir / f"{pid}.dcm"), {})])
+        for pid in patient_ids
+    ]
+
+    calls = []
+    total_ok, errors = run_anonymization(
+        tasks,
+        _default_settings(),
+        max_workers=2,
+        parallel_threshold=0,
+        on_progress=lambda done, total, series_key: calls.append((done, total, series_key)),
+    )
+
+    assert total_ok == len(patient_ids)
+    assert errors == []
+    assert len(calls) == len(patient_ids)  # exactly once per series
+    final_done, final_total, _ = calls[-1]
+    assert final_done == final_total == len(patient_ids)
 
 
 # ---------------------------------------------------------------------------

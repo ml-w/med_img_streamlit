@@ -23,6 +23,7 @@ Every test here runs inside a monkeypatched tmp cwd so it never touches a real
 `.session.json` anywhere in the repo.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -42,8 +43,10 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
+from app_settings.config import anon_max_workers  # noqa: E402
 
-def _create_test_dicom(path: Path, patient_id: str, accession: str) -> Path:
+
+def _create_test_dicom(path: Path, patient_id: str, accession: str, series_description: str | None = None) -> Path:
     """Minimal DICOM file, same pattern as tests/test_anonymize_dicom.py."""
     file_meta = Dataset()
     file_meta.MediaStorageSOPClassUID = generate_uid()
@@ -62,6 +65,8 @@ def _create_test_dicom(path: Path, patient_id: str, accession: str) -> Path:
     ds.Modality = "OT"
     ds.SeriesInstanceUID = generate_uid()
     ds.StudyInstanceUID = generate_uid()
+    if series_description is not None:
+        ds.SeriesDescription = series_description
     ds.is_little_endian = True
     ds.is_implicit_VR = False
     ds.Rows = 1
@@ -217,3 +222,60 @@ def test_series_dir_stays_deselected_if_user_removed_it(tmp_path, monkeypatch, d
     assert "SeriesDir" not in at.session_state["selected_display_tags"]
     edit_df = at.session_state["edit_df"]
     assert "SeriesDir" not in edit_df.columns
+
+
+def test_per_series_layout_with_series_instance_uid_run_writes_expected_tree(tmp_path, monkeypatch, dicom_dataset):
+    """
+    End-to-end: Fetch -> Confirm PK -> select the 'per_series' output layout
+    with SeriesInstanceUID naming -> Run, then assert the anonymized output
+    tree on disk has one folder per series named after its SeriesInstanceUID
+    (the anonymizer never changes UIDs, so no clash/Nameless path is hit here).
+    """
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    output_root = tmp_path / "anon_out"
+
+    at = AppTest.from_file(str(APP_DIR / "DicomAnonymizer.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+
+    _fetch_and_confirm_pk(at, dicom_dataset)
+
+    # The two series' (unchanged) SeriesInstanceUID values, as scanned.
+    dcm_info = at.session_state["dcm_info"]
+    expected_uids = sorted(dcm_info["SeriesInstanceUID"].astype(str).unique())
+    assert len(expected_uids) == 2
+
+    # The "Worker processes" number_input exists, pre-filled from config
+    # (clamped to the machine's CPU count -- see streamlit_app()'s anon_workers
+    # default). With only 2 files here (well under anon_parallel_threshold),
+    # the Run below still executes sequentially regardless of this value.
+    workers_input = at.number_input(key="anon_workers")
+    expected_default = min(anon_max_workers, os.cpu_count() or 1)
+    assert workers_input.value == expected_default
+
+    at.text_input(key="output_folder").set_value(str(output_root))
+    at.run()
+    assert not at.exception
+
+    at.radio(key="output_layout").set_value("per_series")
+    at.run()
+    assert not at.exception
+
+    at.selectbox(key="series_name_tag").set_value("SeriesInstanceUID")
+    at.run()
+    assert not at.exception
+
+    run_btn = next(b for b in at.button if b.label == "Run")
+    run_btn.click()
+    at.run()
+    assert not at.exception
+
+    for uid in expected_uids:
+        out_file = output_root / uid / "img.dcm"
+        assert out_file.exists(), f"Expected anonymized file at {out_file}"
+
+    # No unexpected top-level folders (e.g. Nameless) since both series have UIDs.
+    assert sorted(p.name for p in output_root.iterdir()) == expected_uids
